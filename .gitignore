@@ -1,0 +1,16 @@
+node_modules
+frontend/node_modules
+dist
+frontend/dist
+artifacts
+cache
+.env
+frontend/.env
+output
+*.tsbuildinfo
+frontend/*.js
+frontend/*.d.ts
+deployments/*.local.json
+coverage
+playwright-report
+test-results

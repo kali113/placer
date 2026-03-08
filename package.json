@@ -1,0 +1,32 @@
+{
+  "name": "somnia-place",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "frontend"
+  ],
+  "scripts": {
+    "compile": "hardhat compile",
+    "build": "npm run compile && npm run frontend:build",
+    "deploy": "npm run compile && tsx scripts/deploy.ts",
+    "setup:subscription": "tsx scripts/setupSubscription.ts",
+    "setup:streams": "tsx scripts/setupDataStream.ts",
+    "frontend:dev": "npm run dev --workspace frontend",
+    "frontend:build": "npm run build --workspace frontend"
+  },
+  "dependencies": {
+    "@somnia-chain/reactivity": "^0.1.10",
+    "@somnia-chain/streams": "^0.12.2",
+    "dotenv": "^16.6.1",
+    "viem": "~2.37.8"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-verify": "^3.0.12",
+    "@somnia-chain/reactivity-contracts": "^0.1.6",
+    "@types/node": "^24.7.2",
+    "hardhat": "^3.1.11",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}
