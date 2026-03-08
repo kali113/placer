@@ -8,6 +8,8 @@ import {
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent
 } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { Wallet, Activity, Trophy, Crosshair, Clock, Network, Map as MapIcon, Palette } from "lucide-react";
 import {
   createWalletClient,
   custom,
@@ -777,38 +779,45 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <section className="hero-panel">
-        <div>
-          <p className="eyebrow">Somnia Shannon Collaborative Canvas</p>
-          <h1>SomniaPlace</h1>
-          <p className="hero-copy">
-            A fully on-chain pixel arena: wallet writes go straight to the canvas contract,
-            Reactivity scores and penalizes local play, and Streams pushes live updates into the
-            board without polling.
-          </p>
+      <motion.header 
+        initial={{ opacity: 0, y: -20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="header-glass"
+      >
+        <div className="brand-title">
+          <div className="brand-dot" />
+          SomniaPlace <span style={{ color: "var(--text-secondary)", fontWeight: 400, fontSize: "0.9rem" }}>Canvas</span>
         </div>
-        <div className="status-stack">
-          <button className="wallet-button" onClick={() => void connectWallet()}>
-            {account ? `Connected ${shortAddress(account)}` : "Connect Wallet"}
+        
+        <div className="header-actions">
+          <div className="status-indicator">
+            <Activity size={14} className="panel-icon" />
+            <span>{status.length > 30 ? `${status.substring(0, 30)}...` : status}</span>
+          </div>
+          
+          <button className={`wallet-btn ${!account ? 'outline' : ''}`} onClick={() => void connectWallet()}>
+            <Wallet size={16} />
+            {account ? shortAddress(account) : "Connect"}
           </button>
-          <p className="status-copy">{status}</p>
-          <p className="meta-copy">
-            Shannon RPC: <span>{somniaRpcUrl}</span>
-          </p>
         </div>
-      </section>
+      </motion.header>
 
-      <main className="layout">
-        <section className="board-panel">
-          <div className="board-toolbar">
-            <div>
-              <p className="toolbar-label">Selected Color</p>
-              <div className="palette-grid">
+      <main className="main-grid">
+        <motion.section 
+          initial={{ opacity: 0, x: -20 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ delay: 0.1 }}
+          className="canvas-container"
+        >
+          <div className="toolbar">
+            <div className="palette-wrap">
+              <Palette size={16} color="var(--text-secondary)" />
+              <div className="palette-colors">
                 {palette.map((swatch, index) => (
                   <button
                     key={swatch}
                     aria-label={`Color ${index}`}
-                    className={index === selectedColor ? "swatch active" : "swatch"}
+                    className={index === selectedColor ? "color-swatch active" : "color-swatch"}
                     style={{ backgroundColor: swatch }}
                     onClick={() => setSelectedColor(index)}
                   />
@@ -816,25 +825,25 @@ export default function App() {
               </div>
             </div>
 
-            <div className="toolbar-notes">
-              <p>Click to place after confirmation. Shift-drag or right-drag pans. Wheel zooms.</p>
-              <p>
-                Cooldown:{" "}
-                <strong>{cooldownSeconds > 0 ? `${cooldownSeconds}s remaining` : "ready"}</strong>
-              </p>
-              <p>
-                Pending:{" "}
+            <div className="toolbar-info">
+              <div className="toolbar-info-row">
+                <Clock size={14} />
+                <span>Cooldown:</span>
+                <strong>{cooldownSeconds > 0 ? `${cooldownSeconds}s` : "READY"}</strong>
+              </div>
+              <div className="toolbar-info-row">
+                <Crosshair size={14} />
+                <span>Pending:</span>
                 <strong>
-                  {pendingCell ? `${pendingCell.x},${pendingCell.y}` : txPending ? "waiting…" : "none"}
+                  {pendingCell ? `${pendingCell.x},${pendingCell.y}` : txPending ? "WAITING" : "NONE"}
                 </strong>
-              </p>
+              </div>
             </div>
           </div>
 
-          <div className="board-shell" ref={boardShellRef}>
+          <div className="canvas-wrapper" ref={boardShellRef}>
             <canvas
               ref={canvasRef}
-              className="board-canvas"
               onContextMenu={(event) => event.preventDefault()}
               onPointerMove={handlePointerMove}
               onPointerLeave={() => setHoverCell(null)}
@@ -843,66 +852,90 @@ export default function App() {
               onWheel={handleWheel}
             />
           </div>
-        </section>
+        </motion.section>
 
-        <aside className="side-panel">
-          <section className="card">
-            <p className="card-kicker">Hover Detail</p>
-            <h2>
-              {hoverCell ? `(${hoverCell.x}, ${hoverCell.y})` : "Move across the board"}
+        <motion.aside 
+          initial={{ opacity: 0, x: 20 }}
+          animate={{ opacity: 1, x: 0 }}
+          transition={{ delay: 0.2 }}
+          className="sidebar"
+        >
+          <div className="panel">
+            <div className="panel-header">
+              <MapIcon size={18} className="panel-icon" />
+              Hover Detail
+            </div>
+            
+            <h2 className="mono" style={{ color: hoverCell ? "var(--text-primary)" : "var(--text-muted)", fontSize: "1.2rem" }}>
+              {hoverCell ? `[${hoverCell.x}, ${hoverCell.y}]` : "[-- , --]"}
             </h2>
-            <dl className="detail-grid">
-              <div>
-                <dt>Color</dt>
-                <dd>{hoverPixel ? hoverPixel.color : "n/a"}</dd>
+            
+            <div className="data-grid">
+              <div className="data-card">
+                <span className="data-label">Color ID</span>
+                <span className="data-value">{hoverPixel ? hoverPixel.color : "-"}</span>
               </div>
-              <div>
-                <dt>Owner</dt>
-                <dd>{shortAddress(hoverPixel?.owner)}</dd>
+              <div className="data-card">
+                <span className="data-label">Owner</span>
+                <span className="data-value">{shortAddress(hoverPixel?.owner)}</span>
               </div>
-              <div>
-                <dt>Updated</dt>
-                <dd>{hoverPixel ? formatTimestamp(hoverPixel.lastUpdated) : "n/a"}</dd>
+              <div className="data-card">
+                <span className="data-label">Updated</span>
+                <span className="data-value" style={{ fontSize: "0.8rem" }}>{hoverPixel ? formatTimestamp(hoverPixel.lastUpdated) : "-"}</span>
               </div>
-              <div>
-                <dt>Overwrites</dt>
-                <dd>{hoverPixel?.overwriteCount ?? "n/a"}</dd>
+              <div className="data-card">
+                <span className="data-label">Overwrites</span>
+                <span className="data-value">{hoverPixel?.overwriteCount ?? "-"}</span>
               </div>
-            </dl>
-          </section>
+            </div>
+          </div>
 
-          <section className="card">
-            <p className="card-kicker">Leaderboard</p>
-            <h2>Top Builders</h2>
-            <ul className="leaderboard-list">
-              {deferredLeaderboard.map((entry, index) => (
-                <li key={entry.address}>
-                  <div>
-                    <span className="rank">#{index + 1}</span>
-                    <strong>{shortAddress(entry.address)}</strong>
-                  </div>
-                  <div className="leaderboard-meta">
-                    <span>{entry.score.toString()} pts</span>
-                    <span>{entry.placements.toString()} placements</span>
-                  </div>
-                </li>
-              ))}
-              {deferredLeaderboard.length === 0 ? (
-                <li className="empty-state">No scores yet. The board is live and ready.</li>
-              ) : null}
-            </ul>
-          </section>
+          <div className="panel">
+            <div className="panel-header">
+              <Trophy size={18} className="panel-icon" />
+              Top Builders
+            </div>
+            
+            {deferredLeaderboard.length === 0 ? (
+              <div className="empty-state">Board is live and ready.</div>
+            ) : (
+              <ul className="leaderboard">
+                <AnimatePresence>
+                  {deferredLeaderboard.map((entry, index) => (
+                    <motion.li 
+                      key={entry.address}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: index * 0.05 }}
+                      className="leaderboard-item"
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span className={`lb-rank top-${index + 1}`}>#{index + 1}</span>
+                        <span className="lb-address">{shortAddress(entry.address)}</span>
+                      </div>
+                      <div className="lb-stats">
+                        <span className="lb-score">{entry.score.toString()} pts</span>
+                        <span className="lb-placements">{entry.placements.toString()} pixels</span>
+                      </div>
+                    </motion.li>
+                  ))}
+                </AnimatePresence>
+              </ul>
+            )}
+          </div>
 
-          <section className="card">
-            <p className="card-kicker">Architecture</p>
-            <h2>Live Paths</h2>
-            <ul className="plain-list">
-              <li>Write path: wallet calls `placePixel(x, y, color)` on the canvas.</li>
-              <li>Reactive path: `PixelPlaced` drives reactor scoring, penalties, and decay.</li>
-              <li>Read path: Streams subscriptions push canvas and reactor events over WebSocket.</li>
+          <div className="panel">
+            <div className="panel-header">
+              <Network size={18} className="panel-icon" />
+              Live Feed
+            </div>
+            <ul className="list-basic">
+              <li>Direct wallet writes to Canvas contract</li>
+              <li>Reactivity scores & penalizes local play</li>
+              <li>Streams pushes live WebSocket events</li>
             </ul>
-          </section>
-        </aside>
+          </div>
+        </motion.aside>
       </main>
     </div>
   );
