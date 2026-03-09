@@ -1,15 +1,116 @@
 # SomniaPlace
 
-SomniaPlace is a fully on-chain collaborative pixel-art game for Somnia Shannon. Wallets place pixels directly on a shared canvas contract, Somnia Reactivity runs validator-triggered game logic on each `PixelPlaced` event, and Somnia Data Streams pushes live updates to the frontend over WebSocket without polling.
+SomniaPlace is a fully on-chain collaborative pixel-art canvas built for Somnia Shannon testnet. Every pixel placement is a transaction on-chain, and the entire game logic — scoring, anti-griefing, pattern rewards, and decay — runs through **Somnia Reactivity**, the chain's native event-driven execution layer.
 
-## Why Somnia
+## Why Somnia Reactivity
 
-Somnia is a strong fit for `r/place`-style gameplay because the workload is concentrated on shared state: many users write to the same canvas and the same contract family. The chain is positioned for fully on-chain mass-consumer apps, with published Somnia materials emphasizing high throughput, sub-second finality, and low-cost execution for games and social systems. The Nodes.guru architecture write-up is especially relevant here because it describes Somnia’s approach as optimizing high sequential throughput on shared logic rather than relying on application sharding. That maps directly to a collaborative canvas where contention is the feature, not an edge case.
+Somnia Reactivity is the core differentiator of this project. It is a dual-mode event subscription system built into the Somnia blockchain:
 
-## Reactivity vs Streams
+### On-Chain Reactivity (Validator-Triggered Smart Contract Callbacks)
 
-- On-Chain Reactivity: validator-triggered smart-contract callbacks for scoring, anti-griefing penalties, and decay. In this project that path is `SomniaPlace.sol -> PixelPlaced -> Reactivity Precompile 0x0100 -> SomniaPlaceReactor.sol`.
-- Somnia Data Streams: WebSocket delivery of structured on-chain data to the UI. In this project the default frontend path subscribes to canonical contract events, while `scripts/setupDataStream.ts` registers an optional structured mirror/feed for future extensions.
+When a user places a pixel, the `SomniaPlace.sol` canvas contract emits a `PixelPlaced` event. The Somnia Reactivity Precompile (`0x0100`) intercepts this event at the validator level and automatically invokes our `SomniaPlaceReactor.sol` handler contract — with zero off-chain infrastructure, no indexers, no keepers, no cron jobs.
+
+The Reactor then executes game logic atomically:
+- **Territory scoring** — BFS cluster detection around the placed pixel; larger clusters earn exponentially more points (`clusterSize * 2`)
+- **Pattern rewards** — Detects 2x2 blocks (+8 pts), horizontal-4 lines (+6 pts), vertical-4 lines (+6 pts) owned by the same player
+- **Anti-griefing** — Tracks overwrite streaks per pixel; repeated overwrites trigger escalating cooldown penalties via `canvas.setPenaltyCooldown()`
+- **Decay sweep** — Stale neighboring pixels (>30 min since last update) are reset via `canvas.decayPixel()`
+
+This is registered as an on-chain Solidity subscription:
+
+```
+Emitter:  SomniaPlace.sol (Canvas)
+Topic:    PixelPlaced(address,uint16,uint16,uint8,uint256)
+Handler:  SomniaPlaceReactor.sol._onEvent()
+Precompile: 0x0100
+Subscription ID: 4614
+```
+
+### Off-Chain Reactivity (Browser Real-Time Event Delivery)
+
+The frontend uses the same `@somnia-chain/reactivity` SDK in **off-chain mode** — `reactivitySdk.subscribe()` opens a WebSocket connection managed by Somnia's infrastructure that pushes contract events to the browser in real-time. This is not standard EVM log polling; it uses the same Reactivity layer that powers the on-chain handler invocations.
+
+Two subscriptions run in the browser:
+1. **Canvas subscription** — Watches `PixelPlaced` events from `SomniaPlace.sol` to update the board instantly
+2. **Reactor subscription** — Watches `TerritoryScored`, `PatternRewarded`, `CooldownPenaltyApplied`, and `PixelDecayed` events from `SomniaPlaceReactor.sol` to update the leaderboard and cooldown UI
+
+Both subscriptions deliver event payloads (topics + data) through the `onData` callback, which are decoded using viem's `decodeEventLog`.
+
+## How the Reactivity SDK Is Used
+
+### 1. Script-side: Creating the On-Chain Subscription
+
+`scripts/setupSubscription.ts` uses the SDK's `createSoliditySubscription()` method:
+
+```typescript
+import { SDK as ReactivitySDK } from "@somnia-chain/reactivity";
+
+const sdk = new ReactivitySDK({ public: publicClient, wallet: walletClient });
+
+await sdk.createSoliditySubscription({
+  handlerContractAddress: reactorAddress,   // SomniaPlaceReactor.sol
+  emitter: canvasAddress,                   // SomniaPlace.sol
+  eventTopics: [pixelPlacedTopic],          // keccak256("PixelPlaced(...)")
+  priorityFeePerGas: parseGwei("2"),
+  maxFeePerGas: parseGwei("10"),
+  gasLimit: 500_000n,
+  isGuaranteed: true,
+  isCoalesced: false,
+});
+```
+
+This registers the subscription with the Reactivity Precompile so validators know to invoke the Reactor whenever the Canvas emits `PixelPlaced`.
+
+### 2. Frontend: Real-Time Event Subscriptions
+
+`frontend/src/lib/clients.ts` creates the SDK instance:
+
+```typescript
+import { SDK as ReactivitySDK } from "@somnia-chain/reactivity";
+
+export const reactivitySdk = new ReactivitySDK({
+  public: wsClient  // viem WebSocket public client
+});
+```
+
+`frontend/src/App.tsx` subscribes to events:
+
+```typescript
+// Canvas events — pixel placements
+const canvasSub = await reactivitySdk.subscribe({
+  eventContractSources: [canvasAddress],
+  topicOverrides: [pixelPlacedTopic],
+  ethCalls: [],
+  onData: (payload) => handleCanvasStream(payload),
+  onError: (error) => console.error("Canvas subscription error", error)
+});
+
+// Reactor events — scoring, penalties, decay
+const reactorSub = await reactivitySdk.subscribe({
+  eventContractSources: [reactorAddress],
+  ethCalls: [],
+  onData: (payload) => handleReactorStream(payload),
+  onError: (error) => console.error("Reactor subscription error", error)
+});
+```
+
+### 3. Solidity: Reactor Event Handler
+
+`contracts/SomniaPlaceReactor.sol` extends `SomniaEventHandler` from `@somnia-chain/reactivity-contracts`:
+
+```solidity
+import { SomniaEventHandler } from "@somnia-chain/reactivity-contracts/contracts/SomniaEventHandler.sol";
+
+contract SomniaPlaceReactor is SomniaEventHandler {
+    function _onEvent(
+        bytes32[] memory topics,
+        bytes memory data,
+        ...
+    ) internal override {
+        // Decode PixelPlaced event, run scoring/penalties/decay
+    }
+}
+```
 
 ## Architecture
 
@@ -21,167 +122,156 @@ Somnia is a strong fit for `r/place`-style gameplay because the workload is conc
                                         │ placePixel(x,y,color)
                                         ▼
 ┌────────────────────────────────────────────────────────────────────┐
-│                        Frontend (React + Viem)                    │
-│  - canvas render                                                  │
-│  - color picker                                                   │
-│  - cooldown UI                                                    │
-│  - leaderboard                                                    │
-│  - WebSocket Streams subscription                                 │
+│                    Frontend (React + Viem)                         │
+│  - Canvas render (100x100 grid)                                   │
+│  - Color picker (16 colors)                                       │
+│  - Cooldown & penalty UI                                          │
+│  - Leaderboard (on-chain scores)                                  │
+│  - Somnia Reactivity SDK subscribe() for live event push          │
 └──────────────┬───────────────────────────────┬─────────────────────┘
                │                               │
-               │ write path                    │ read path (live push)
+               │ write path                    │ Reactivity subscribe()
                ▼                               ▼
 ┌───────────────────────────┐      ┌─────────────────────────────────┐
-│   SomniaPlace.sol         │      │ Somnia Data Streams subscribe() │
-│ - canonical canvas state  │      │ - default: direct contract logs │
-│ - cooldowns               │      │ - optional structured mirror    │
-│ - stats                   │      └─────────────────────────────────┘
-│ - emits PixelPlaced       │                     │
-└──────────────┬────────────┘                     │ WebSocket push
-               │                                  │
-               │ PixelPlaced event                ▼
-               ▼                      ┌───────────────────────────────┐
-┌───────────────────────────┐         │ Frontend updates changed pixel│
-│ Reactivity Precompile     │         │ instantly; no polling/indexer │
-│ 0x0100                    │         └───────────────────────────────┘
+│   SomniaPlace.sol         │      │ @somnia-chain/reactivity SDK    │
+│ - canonical canvas state  │      │ - off-chain WebSocket mode      │
+│ - cooldowns               │      │ - pushes PixelPlaced events     │
+│ - user stats              │      │ - pushes Reactor events         │
+│ - emits PixelPlaced       │      └─────────────────────────────────┘
+└──────────────┬────────────┘
+               │
+               │ PixelPlaced event
+               ▼
+┌───────────────────────────┐
+│ Reactivity Precompile     │
+│ 0x0100                    │
+│ Subscription #4614        │
 └──────────────┬────────────┘
                │ validator-invoked callback
                ▼
 ┌───────────────────────────┐
 │ SomniaPlaceReactor.sol    │
-│ - territory scoring       │
-│ - anti-griefing           │
-│ - combos / rewards        │
-│ - decay                   │
+│ - territory scoring (BFS) │
+│ - pattern rewards          │
+│ - anti-griefing penalties │
+│ - decay sweep             │
+│ extends SomniaEventHandler│
 └──────────────┬────────────┘
                │ onlyReactor hooks
                ▼
 ┌───────────────────────────┐
 │ SomniaPlace.sol           │
-│ reactive updates / scores │
+│ reactive state updates    │
 └───────────────────────────┘
 ```
 
-## Shannon Config
+## Shannon Testnet Config
 
-- Chain ID: `50312`
-- HTTP RPC: `https://dream-rpc.somnia.network`
-- WebSocket RPC: `wss://dream-rpc.somnia.network/ws`
-- Symbol: `STT`
-- Explorer: `https://shannon-explorer.somnia.network`
-- Faucet: `https://testnet.somnia.network/`
+| Parameter | Value |
+|-----------|-------|
+| Chain ID | `50312` |
+| HTTP RPC | `https://dream-rpc.somnia.network` |
+| WebSocket RPC | `wss://dream-rpc.somnia.network/ws` |
+| Native Token | STT |
+| Explorer | `https://shannon-explorer.somnia.network` |
+| Faucet | `https://testnet.somnia.network/` |
+| Reactivity Precompile | `0x0000000000000000000000000000000000000100` |
+
+## Deployed Contracts (Shannon Testnet)
+
+| Contract | Address |
+|----------|---------|
+| SomniaPlace (Canvas) | `0x199D3e126b2BE52954F5DFCc145463a96659cb19` |
+| SomniaPlaceReactor | `0xf9CBa4cD9dfDd8dBE88C7345CCFb04495d13Bf1b` |
+| Reactivity Subscription | ID `4614` |
 
 ## Project Layout
 
-- [contracts/SomniaPlace.sol](/home/arch/place/contracts/SomniaPlace.sol): canonical on-chain canvas, cooldowns, packed pixel storage, and reactor hooks.
-- [contracts/SomniaPlaceReactor.sol](/home/arch/place/contracts/SomniaPlaceReactor.sol): Somnia event handler with bounded local scoring, overwrite penalties, and decay.
-- [scripts/deploy.ts](/home/arch/place/scripts/deploy.ts): deploys canvas and reactor, links them, and writes deployment metadata.
-- [scripts/setupSubscription.ts](/home/arch/place/scripts/setupSubscription.ts): creates the Solidity subscription for `PixelPlaced`.
-- [scripts/setupDataStream.ts](/home/arch/place/scripts/setupDataStream.ts): registers optional Streams schemas and event metadata for a structured mirror path.
-- [frontend/](/home/arch/place/frontend): React + TypeScript + Vite UI with viem wallet flow and live Streams listeners.
-- [hardhat.config.ts](/home/arch/place/hardhat.config.ts): Shannon-ready Hardhat config.
+```
+placer/
+├── contracts/
+│   ├── SomniaPlace.sol              # On-chain canvas, cooldowns, packed pixel storage
+│   └── SomniaPlaceReactor.sol       # Reactivity handler: scoring, penalties, decay
+├── scripts/
+│   ├── deploy.ts                    # Deploy canvas + reactor, link them, write env
+│   ├── setupSubscription.ts         # Create Reactivity subscription via SDK
+│   └── lib/
+│       ├── somnia.ts                # Chain config
+│       ├── deployments.ts           # Deployment manifest I/O
+│       └── artifacts.ts             # Hardhat artifact reader
+├── deployments/
+│   └── shannon.json                 # Deployed addresses + subscription ID
+├── frontend/
+│   ├── src/
+│   │   ├── App.tsx                  # Main UI with Reactivity subscriptions
+│   │   ├── styles.css               # Dark aesthetic, responsive canvas
+│   │   └── lib/
+│   │       ├── clients.ts           # Reactivity SDK + viem clients
+│   │       ├── chain.ts             # Somnia chain definition
+│   │       ├── contracts.ts         # ABI exports
+│   │       └── pixels.ts            # Pixel packing/unpacking
+│   └── package.json
+├── hardhat.config.ts
+└── package.json
+```
+
+## Dependencies
+
+### On-Chain
+- `@somnia-chain/reactivity-contracts` — Solidity `SomniaEventHandler` base contract
+
+### Script-Side
+- `@somnia-chain/reactivity` — TypeScript SDK for creating Solidity subscriptions
+
+### Frontend
+- `@somnia-chain/reactivity` — TypeScript SDK for off-chain WebSocket event subscriptions
+- `viem` — Ethereum client library (wallet connection, contract reads/writes)
+- `react` 19 — UI framework
+- `framer-motion` — Animations
+- `lucide-react` — Icons
 
 ## Environment
 
-Root `.env` values:
+Root `.env`:
+- `PRIVATE_KEY` — Deployer/subscription owner key (never exposed in browser)
+- `SOMNIA_RPC_URL` — Optional HTTP RPC override
+- `SOMNIA_WS_URL` — Optional WebSocket RPC override
 
-- `PRIVATE_KEY`: deployer/subscription owner key. Never expose this in browser code.
-- `SOMNIA_RPC_URL`: optional override for Shannon HTTP RPC. Defaults to `https://dream-rpc.somnia.network`.
-- `SOMNIA_WS_URL`: optional override for Shannon WebSocket RPC. Defaults to `wss://dream-rpc.somnia.network/ws`.
-- `CANVAS_WIDTH`: optional deploy override. Defaults to `100`.
-- `CANVAS_HEIGHT`: optional deploy override. Defaults to `100`.
-- `PALETTE_SIZE`: optional deploy override. Defaults to `16`.
-
-Frontend env values are written automatically to `frontend/.env` by `scripts/deploy.ts`:
-
+Frontend `.env` (auto-generated by `scripts/deploy.ts`):
 - `VITE_SOMNIA_PLACE_ADDRESS`
 - `VITE_SOMNIA_REACTOR_ADDRESS`
 - `VITE_SOMNIA_CHAIN_ID`
 - `VITE_SOMNIA_RPC_URL`
 - `VITE_SOMNIA_WS_URL`
 - `VITE_SOMNIA_EXPLORER_URL`
-- `VITE_CANVAS_WIDTH`
-- `VITE_CANVAS_HEIGHT`
-- `VITE_PALETTE_SIZE`
-
-For GitHub Pages builds, the workflow reads the same frontend values from repository-level GitHub Actions variables where applicable:
-
-- `VITE_SOMNIA_PLACE_ADDRESS`
-- `VITE_SOMNIA_REACTOR_ADDRESS`
-- `VITE_CANVAS_WIDTH`
-- `VITE_CANVAS_HEIGHT`
-- `VITE_PALETTE_SIZE`
+- `VITE_CANVAS_WIDTH` / `VITE_CANVAS_HEIGHT` / `VITE_PALETTE_SIZE`
 
 ## Local Workflow
 
-1. Install dependencies.
-
 ```bash
+# 1. Install dependencies
 npm install
-```
 
-2. Add a root `.env` with at least `PRIVATE_KEY`.
+# 2. Add root .env with PRIVATE_KEY
+echo "PRIVATE_KEY=0x..." > .env
 
-3. Compile contracts.
-
-```bash
+# 3. Compile contracts
 npm run compile
-```
 
-4. Deploy to Shannon.
-
-```bash
+# 4. Deploy to Shannon testnet
 npm run deploy
-```
 
-5. Create the Reactivity subscription.
-
-```bash
+# 5. Create Reactivity subscription (requires 32+ STT balance)
 npm run setup:subscription
-```
 
-6. Optionally register structured Streams schemas for a future mirror/feed.
-
-```bash
-npm run setup:streams
-```
-
-7. Run the frontend.
-
-```bash
+# 6. Start frontend dev server
 npm run frontend:dev
 ```
 
-## GitHub Pages
-
-This repo now includes [deploy-pages.yml](/home/arch/place/.github/workflows/deploy-pages.yml), which deploys the Vite frontend to GitHub Pages from the `main` branch using the official GitHub Pages Actions flow.
-
-Repository-specific notes:
-
-- The repository is `kali113/placer`, so the Vite base path resolves to `/placer/` automatically during GitHub Actions builds.
-- On GitHub, go to `Settings -> Pages` and set `Source` to `GitHub Actions`.
-- Add these repository variables before relying on the hosted app:
-  - `VITE_SOMNIA_PLACE_ADDRESS`
-  - `VITE_SOMNIA_REACTOR_ADDRESS`
-  - optionally `VITE_CANVAS_WIDTH`, `VITE_CANVAS_HEIGHT`, and `VITE_PALETTE_SIZE`
-- Shannon public RPC, WebSocket, explorer, and chain ID defaults are already baked into the workflow.
-- If you later move the frontend to a user-site repo like `kali113.github.io` or to a custom domain, override `VITE_BASE_PATH=/` for the Pages build instead of the repo-path default.
-
-## Frontend Realtime Behavior
-
-- Default path: the UI uses `@somnia-chain/streams` WebSocket subscriptions against canonical contract events. It subscribes to `PixelPlaced` from the canvas contract and a wildcard reactor stream for decay and score events.
-- Optional path: `scripts/setupDataStream.ts` registers a pixel schema, a leaderboard schema, and a named Streams event schema for a structured mirror path. The base app does not depend on that mirror to function.
-
 ## Notes
 
-- The frontend intentionally uses the user wallet for `placePixel()` writes. No private key is exposed in browser code.
-- The reactor does not re-emit `PixelPlaced`, which avoids obvious subscription loops.
-- The leaderboard is on-chain: reactor scores are stored on the reactor contract, while placement counters remain on the canvas contract.
-- Hardhat is configured with Solidity `0.8.28` and `0.8.30`. The extra `0.8.30` compiler is necessary because the published `@somnia-chain/reactivity-contracts` package currently pins `SomniaEventHandler.sol` to `pragma solidity 0.8.30`.
-- In this environment Hardhat builds successfully but warns that Node `25.7.0` is not an officially supported runtime. Prefer Node 22 LTS for a production setup.
-
-## VERIFY AGAINST LATEST SOMNIA DOCS
-
-- Shannon subscription funding: current subscription-management docs say `32+ STT` on testnet, while older Solidity tutorial text still says `32+ SOM`.
-- Structured Streams publishing from Solidity: current docs and package inspection clearly show TypeScript `setAndEmitEvents()` and a Solidity proxy pattern using low-level `esstores()`, but not a verified Solidity-side `setAndEmitEvents()` example for the canvas contract itself.
-- Cron rounds are not implemented in this base build. If you add timed resets/snapshots, re-verify the latest cron-subscription SDK version requirements before wiring scheduled rounds.
+- Wallet connection uses EIP-6963 provider detection to specifically target MetaMask, avoiding Trust Wallet / Coinbase hijacking `window.ethereum`.
+- The reactor does not re-emit `PixelPlaced`, avoiding subscription loops.
+- The leaderboard is fully on-chain: scores on the Reactor, placement counts on the Canvas.
+- Hardhat uses Solidity 0.8.28 and 0.8.30 (the latter required by `@somnia-chain/reactivity-contracts`).
+- Pixel placement includes optimistic UI updates — the board cell updates immediately after TX confirmation, before the Reactivity event arrives.

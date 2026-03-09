@@ -1,15 +1,19 @@
 import {
   startTransition,
+  useCallback,
   useDeferredValue,
   useEffect,
   useEffectEvent,
+  useMemo,
   useRef,
   useState,
-  type PointerEvent as ReactPointerEvent,
-  type WheelEvent as ReactWheelEvent
+  type PointerEvent as ReactPointerEvent
 } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Wallet, Activity, Trophy, Crosshair, Clock, Network, Map as MapIcon, Palette } from "lucide-react";
+import {
+  Wallet, Activity, Trophy, Crosshair, Clock, Network,
+  Map as MapIcon, Palette, Volume2, VolumeX, Users, Flame, Zap
+} from "lucide-react";
 import {
   createWalletClient,
   custom,
@@ -19,7 +23,7 @@ import {
   type Address
 } from "viem";
 
-import { readClient, streamsSdk } from "./lib/clients";
+import { readClient, reactivitySdk } from "./lib/clients";
 import { somniaShannon, somniaChainId, somniaExplorerUrl, somniaRpcUrl } from "./lib/chain";
 import {
   pixelPlacedTopic,
@@ -28,17 +32,155 @@ import {
 } from "./lib/contracts";
 import { decodePackedPixel, pixelIndex, type DecodedPixel } from "./lib/pixels";
 
+/* ── EIP-6963 provider detection (MetaMask recommended approach) ───────── */
+
+interface EIP6963ProviderInfo {
+  rdns: string;
+  uuid: string;
+  name: string;
+  icon: string;
+}
+
+interface EIP1193Provider {
+  request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
+  on?: (event: string, listener: (...args: unknown[]) => void) => void;
+  removeListener?: (event: string, listener: (...args: unknown[]) => void) => void;
+}
+
+interface EIP6963ProviderDetail {
+  info: EIP6963ProviderInfo;
+  provider: EIP1193Provider;
+}
+
+type EIP6963AnnounceProviderEvent = CustomEvent<EIP6963ProviderDetail>;
+
 declare global {
+  interface WindowEventMap {
+    "eip6963:announceProvider": EIP6963AnnounceProviderEvent;
+  }
   interface Window {
-    ethereum?: {
-      request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
-      on?: (event: string, listener: (...args: unknown[]) => void) => void;
-      removeListener?: (event: string, listener: (...args: unknown[]) => void) => void;
-    };
     render_game_to_text?: () => string;
     advanceTime?: (ms: number) => void;
   }
 }
+
+/** All announced EIP-6963 providers, populated at module load. */
+const eip6963Providers: EIP6963ProviderDetail[] = [];
+
+window.addEventListener("eip6963:announceProvider", (event: EIP6963AnnounceProviderEvent) => {
+  const detail = event.detail;
+  if (eip6963Providers.some((p) => p.info.uuid === detail.info.uuid)) return;
+  eip6963Providers.push(detail);
+});
+
+// Ask installed extensions to announce themselves.
+window.dispatchEvent(new Event("eip6963:requestProvider"));
+
+/**
+ * Return the MetaMask provider using EIP-6963 `rdns` identification.
+ * This is the MetaMask-recommended way to avoid Trust Wallet / Coinbase /
+ * other extensions hijacking `window.ethereum`.
+ */
+function getProvider(): EIP1193Provider | null {
+  // First: try EIP-6963 announced providers – match by rdns
+  const metamask = eip6963Providers.find((p) => p.info.rdns === "io.metamask");
+  if (metamask) return metamask.provider;
+
+  // Fallback: any announced provider (user may only have one wallet)
+  if (eip6963Providers.length > 0) return eip6963Providers[0].provider;
+
+  return null;
+}
+
+/* ── Feed entry types ─────────────────────────────────────────────────── */
+
+interface FeedEntry {
+  id: number;
+  timestamp: number;
+  kind: "pixel" | "territory" | "pattern" | "penalty" | "decay";
+  message: string;
+}
+
+let feedIdCounter = 0;
+const MAX_FEED_ENTRIES = 50;
+
+/* ── Sound engine (Web Audio API — no files needed) ───────────────────── */
+
+let audioCtx: AudioContext | null = null;
+
+function getAudioContext(): AudioContext {
+  if (!audioCtx) {
+    audioCtx = new AudioContext();
+  }
+  if (audioCtx.state === "suspended") {
+    void audioCtx.resume();
+  }
+  return audioCtx;
+}
+
+function playClickSound() {
+  const ctx = getAudioContext();
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(880, ctx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(440, ctx.currentTime + 0.08);
+  gain.gain.setValueAtTime(0.12, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.1);
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start(ctx.currentTime);
+  osc.stop(ctx.currentTime + 0.1);
+}
+
+function playScoreChime() {
+  const ctx = getAudioContext();
+  const notes = [523.25, 659.25, 783.99]; // C5, E5, G5 arpeggio
+  notes.forEach((freq, i) => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "triangle";
+    const t = ctx.currentTime + i * 0.08;
+    osc.frequency.setValueAtTime(freq, t);
+    gain.gain.setValueAtTime(0.1, t);
+    gain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(t);
+    osc.stop(t + 0.2);
+  });
+}
+
+function playWarningBuzz() {
+  const ctx = getAudioContext();
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = "sawtooth";
+  osc.frequency.setValueAtTime(150, ctx.currentTime);
+  gain.gain.setValueAtTime(0.08, ctx.currentTime);
+  gain.gain.linearRampToValueAtTime(0, ctx.currentTime + 0.25);
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start(ctx.currentTime);
+  osc.stop(ctx.currentTime + 0.25);
+}
+
+function playDecayWhoosh() {
+  const ctx = getAudioContext();
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = "sine";
+  osc.frequency.setValueAtTime(600, ctx.currentTime);
+  osc.frequency.exponentialRampToValueAtTime(100, ctx.currentTime + 0.2);
+  gain.gain.setValueAtTime(0.06, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.2);
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start(ctx.currentTime);
+  osc.stop(ctx.currentTime + 0.2);
+}
+
+/* ── Constants & palette ──────────────────────────────────────────────── */
 
 interface LeaderboardEntry {
   address: Address;
@@ -51,19 +193,18 @@ interface HoverCell {
   y: number;
 }
 
-interface Viewport {
-  scale: number;
-  offsetX: number;
-  offsetY: number;
-  initialized: boolean;
-}
-
 const canvasAddress = import.meta.env.VITE_SOMNIA_PLACE_ADDRESS as Address | undefined;
 const reactorAddress = import.meta.env.VITE_SOMNIA_REACTOR_ADDRESS as Address | undefined;
 const boardWidth = Number(import.meta.env.VITE_CANVAS_WIDTH ?? 100);
 const boardHeight = Number(import.meta.env.VITE_CANVAS_HEIGHT ?? 100);
 const paletteSize = Number(import.meta.env.VITE_PALETTE_SIZE ?? 16);
 const leaderboardLimit = 8n;
+
+/** Heatmap glow fades after this many ms. */
+const HEATMAP_FADE_MS = 60_000;
+
+/** Penalty pulse duration in ms. */
+const PENALTY_PULSE_MS = 10_000;
 
 const palette = [
   "#101318",
@@ -86,23 +227,6 @@ const palette = [
 
 const emptyBoard = new Uint8Array(boardWidth * boardHeight);
 
-function createInitialViewport(surfaceWidth: number, surfaceHeight: number): Viewport {
-  const scale = Math.max(
-    4,
-    Math.floor(Math.min(surfaceWidth / boardWidth, surfaceHeight / boardHeight) * 0.8)
-  );
-  return {
-    scale,
-    offsetX: Math.floor((surfaceWidth - boardWidth * scale) / 2),
-    offsetY: Math.floor((surfaceHeight - boardHeight * scale) / 2),
-    initialized: true
-  };
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
-
 function shortAddress(address: Address | null | undefined): string {
   if (!address) {
     return "Unclaimed";
@@ -117,26 +241,47 @@ function formatTimestamp(timestamp: number): string {
   return new Date(timestamp * 1000).toLocaleString();
 }
 
+function timeAgo(ms: number): string {
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  return `${Math.floor(minutes / 60)}h ago`;
+}
+
+/* ── Feed entry icon mapping ──────────────────────────────────────────── */
+
+const feedKindIcons: Record<FeedEntry["kind"], string> = {
+  pixel: "px",
+  territory: "ts",
+  pattern: "pt",
+  penalty: "!!",
+  decay: "dc"
+};
+
+const feedKindColors: Record<FeedEntry["kind"], string> = {
+  pixel: "var(--accent-color)",
+  territory: "var(--success)",
+  pattern: "#ffd166",
+  penalty: "#ef476f",
+  decay: "var(--text-muted)"
+};
+
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const boardShellRef = useRef<HTMLDivElement | null>(null);
+  const feedListRef = useRef<HTMLUListElement | null>(null);
   const hoverCacheRef = useRef<Map<string, DecodedPixel>>(new Map());
-  const panRef = useRef<{
-    pointerId: number;
-    startX: number;
-    startY: number;
-    originX: number;
-    originY: number;
-  } | null>(null);
   const virtualNowOffsetRef = useRef(0);
+  const soundEnabledRef = useRef(false);
+
+  /* Recent pixel timestamps for heatmap (key = "x:y", value = Date.now()) */
+  const recentPixelsRef = useRef<Map<string, number>>(new Map());
+
+  /* Penalized pixel coords for cooldown pulse (key = "x:y", value = expiry Date.now()) */
+  const penalizedPixelsRef = useRef<Map<string, number>>(new Map());
 
   const [surfaceSize, setSurfaceSize] = useState({ width: 960, height: 720 });
-  const [viewport, setViewport] = useState<Viewport>({
-    scale: 6,
-    offsetX: 0,
-    offsetY: 0,
-    initialized: false
-  });
   const [board, setBoard] = useState<Uint8Array>(emptyBoard);
   const [account, setAccount] = useState<Address | null>(null);
   const [selectedColor, setSelectedColor] = useState(2);
@@ -149,8 +294,41 @@ export default function App() {
   const [pendingCell, setPendingCell] = useState<HoverCell | null>(null);
   const [clock, setClock] = useState(() => Date.now());
 
+  /* Feature 1: Live Activity Feed */
+  const [feed, setFeed] = useState<FeedEntry[]>([]);
+
+  /* Feature 2: Sound toggle */
+  const [soundEnabled, setSoundEnabled] = useState(false);
+
+  /* Feature 3: Heatmap toggle */
+  const [heatmapEnabled, setHeatmapEnabled] = useState(false);
+
+  /* Feature 4: Unique active builders */
+  const [uniqueBuilders, setUniqueBuilders] = useState<Set<string>>(new Set());
+
+  /* Feature 5: Player profile — score for hovered pixel owner */
+  const [hoverOwnerScore, setHoverOwnerScore] = useState<bigint | null>(null);
+
   const deferredLeaderboard = useDeferredValue(leaderboard);
   const cooldownSeconds = Math.max(0, Math.ceil((cooldownUntil - clock) / 1000));
+
+  // Keep the ref in sync for use inside sound functions called from useEffectEvent
+  useEffect(() => {
+    soundEnabledRef.current = soundEnabled;
+  }, [soundEnabled]);
+
+  const pushFeedEntry = useCallback((kind: FeedEntry["kind"], message: string) => {
+    const entry: FeedEntry = {
+      id: ++feedIdCounter,
+      timestamp: Date.now(),
+      kind,
+      message
+    };
+    setFeed((prev) => {
+      const next = [entry, ...prev];
+      return next.length > MAX_FEED_ENTRIES ? next.slice(0, MAX_FEED_ENTRIES) : next;
+    });
+  }, []);
 
   const refreshLeaderboard = useEffectEvent(async () => {
     if (!reactorAddress || !canvasAddress) {
@@ -229,17 +407,41 @@ export default function App() {
 
     const boardBytes = hexToBytes(canvasData);
     startTransition(() => setBoard(boardBytes));
+
+    // Feature 4: Pre-populate builder count from on-chain participant list
+    try {
+      const count = (await readClient.readContract({
+        address: canvasAddress,
+        abi: somniaPlaceAbi,
+        functionName: "participantCount"
+      })) as bigint;
+
+      if (count > 0n) {
+        const participants = (await readClient.readContract({
+          address: canvasAddress,
+          abi: somniaPlaceAbi,
+          functionName: "getParticipants",
+          args: [0n, count > 500n ? 500n : count]
+        })) as Address[];
+
+        setUniqueBuilders(new Set(participants.map((a) => a.toLowerCase())));
+      }
+    } catch (err) {
+      console.warn("Failed to fetch participant list", err);
+    }
+
     setStatus("Canvas hydrated. Waiting for live Shannon events.");
   });
 
   const ensureSomniaWalletChain = useEffectEvent(async () => {
-    if (!window.ethereum) {
-      throw new Error("No injected wallet found.");
+    const provider = getProvider();
+    if (!provider) {
+      throw new Error("No injected wallet found. Install MetaMask.");
     }
 
     const hexChainId = `0x${somniaChainId.toString(16)}`;
     try {
-      await window.ethereum.request({
+      await provider.request({
         method: "wallet_switchEthereumChain",
         params: [{ chainId: hexChainId }]
       });
@@ -249,7 +451,7 @@ export default function App() {
         throw error;
       }
 
-      await window.ethereum.request({
+      await provider.request({
         method: "wallet_addEthereumChain",
         params: [
           {
@@ -269,13 +471,14 @@ export default function App() {
   });
 
   const connectWallet = useEffectEvent(async () => {
-    if (!window.ethereum) {
-      setStatus("Install an EVM wallet to place pixels.");
+    const provider = getProvider();
+    if (!provider) {
+      setStatus("Install MetaMask to place pixels.");
       return;
     }
 
     await ensureSomniaWalletChain();
-    const accounts = (await window.ethereum.request({
+    const accounts = (await provider.request({
       method: "eth_requestAccounts"
     })) as string[];
 
@@ -286,6 +489,16 @@ export default function App() {
     const nextAccount = getAddress(accounts[0] as Address);
     setAccount(nextAccount);
     setStatus(`Connected ${shortAddress(nextAccount)} on Shannon.`);
+
+    // Feature 4: Add connected account to builders set
+    setUniqueBuilders((prev) => {
+      const key = nextAccount.toLowerCase();
+      if (prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.add(key);
+      return next;
+    });
+
     await refreshUserStats(nextAccount);
   });
 
@@ -293,15 +506,16 @@ export default function App() {
     if (!canvasAddress) {
       return;
     }
-    if (!window.ethereum) {
-      setStatus("Install an EVM wallet to place pixels.");
+    const provider = getProvider();
+    if (!provider) {
+      setStatus("Install MetaMask to place pixels.");
       return;
     }
 
     let currentAccount = account;
     if (!currentAccount) {
       await connectWallet();
-      const accounts = (await window.ethereum.request({
+      const accounts = (await provider.request({
         method: "eth_accounts"
       })) as string[];
       currentAccount = accounts[0] ? getAddress(accounts[0] as Address) : null;
@@ -317,7 +531,7 @@ export default function App() {
       const walletClient = createWalletClient({
         account: currentAccount,
         chain: somniaShannon,
-        transport: custom(window.ethereum)
+        transport: custom(provider)
       });
 
       setTxPending(true);
@@ -335,6 +549,18 @@ export default function App() {
       if (receipt.status !== "success") {
         throw new Error("Transaction reverted.");
       }
+
+      // Optimistically update the board so the pixel appears immediately
+      updateBoardCell(cell.x, cell.y, selectedColor);
+
+      // Feature 4: Optimistically add current user to builders
+      setUniqueBuilders((prev) => {
+        const key = currentAccount!.toLowerCase();
+        if (prev.has(key)) return prev;
+        const next = new Set(prev);
+        next.add(key);
+        return next;
+      });
 
       setStatus(
         `Pixel confirmed at ${cell.x},${cell.y}. Explorer: ${somniaExplorerUrl}/tx/${hash}`
@@ -378,13 +604,43 @@ export default function App() {
 
         updateBoardCell(x, y, color);
 
+        // Feature 1: Push to activity feed
+        pushFeedEntry("pixel", `${shortAddress(placer)} placed pixel at [${x},${y}] color #${color}`);
+
+        // Feature 2: Sound effect
+        if (soundEnabledRef.current) {
+          playClickSound();
+        }
+
+        // Feature 3: Track recent pixel for heatmap
+        recentPixelsRef.current.set(`${x}:${y}`, Date.now());
+
+        // Feature 4: Track unique builder
+        setUniqueBuilders((prev) => {
+          if (prev.has(placer.toLowerCase())) return prev;
+          const next = new Set(prev);
+          next.add(placer.toLowerCase());
+          return next;
+        });
+
         if (account && placer.toLowerCase() === account.toLowerCase()) {
           void refreshUserStats(account);
         }
       }
 
       if (decoded.eventName === "PixelDecayed") {
-        updateBoardCell(Number(decoded.args.x), Number(decoded.args.y), Number(decoded.args.color));
+        const x = Number(decoded.args.x);
+        const y = Number(decoded.args.y);
+        const color = Number(decoded.args.color);
+        updateBoardCell(x, y, color);
+
+        // Feature 1: Feed
+        pushFeedEntry("decay", `Pixel at [${x},${y}] decayed`);
+
+        // Feature 2: Sound
+        if (soundEnabledRef.current) {
+          playDecayWhoosh();
+        }
       }
     } catch (error) {
       console.error("Failed to decode canvas stream payload", error);
@@ -409,19 +665,46 @@ export default function App() {
         const color = Number(decoded.args.newColor);
         hoverCacheRef.current.delete(`${x}:${y}`);
         updateBoardCell(x, y, color);
+
+        pushFeedEntry("decay", `Reactor decayed pixel at [${x},${y}]`);
+        if (soundEnabledRef.current) playDecayWhoosh();
       }
 
-      if (
-        decoded.eventName === "TerritoryScored" ||
-        decoded.eventName === "PatternRewarded" ||
-        decoded.eventName === "CooldownPenaltyApplied"
-      ) {
+      if (decoded.eventName === "TerritoryScored") {
+        const player = getAddress(decoded.args.player as Address);
+        const pts = Number(decoded.args.pointsAwarded);
+        const cluster = Number(decoded.args.clusterSize);
+        pushFeedEntry("territory", `${shortAddress(player)} scored +${pts} pts (cluster ${cluster})`);
+
+        if (soundEnabledRef.current) playScoreChime();
         void refreshLeaderboard();
       }
 
-      if (decoded.eventName === "CooldownPenaltyApplied" && account) {
+      if (decoded.eventName === "PatternRewarded") {
         const player = getAddress(decoded.args.player as Address);
-        if (player.toLowerCase() === account.toLowerCase()) {
+        const pts = Number(decoded.args.pointsAwarded);
+        pushFeedEntry("pattern", `${shortAddress(player)} pattern bonus +${pts} pts`);
+
+        if (soundEnabledRef.current) playScoreChime();
+        void refreshLeaderboard();
+      }
+
+      if (decoded.eventName === "CooldownPenaltyApplied") {
+        const player = getAddress(decoded.args.player as Address);
+        const streak = Number(decoded.args.overwriteStreak);
+        pushFeedEntry("penalty", `${shortAddress(player)} penalized (streak ${streak})`);
+
+        if (soundEnabledRef.current) playWarningBuzz();
+
+        // Feature 6: Track penalized pixel for cooldown pulse
+        const pixelId = Number(decoded.args.pixelId);
+        const px = pixelId % boardWidth;
+        const py = Math.floor(pixelId / boardWidth);
+        penalizedPixelsRef.current.set(`${px}:${py}`, Date.now() + PENALTY_PULSE_MS);
+
+        void refreshLeaderboard();
+
+        if (account && player.toLowerCase() === account.toLowerCase()) {
           setCooldownUntil(Number(decoded.args.penaltyUntil) * 1000);
         }
       }
@@ -453,12 +736,6 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!viewport.initialized) {
-      setViewport(createInitialViewport(surfaceSize.width, surfaceSize.height));
-    }
-  }, [surfaceSize.height, surfaceSize.width, viewport.initialized]);
-
-  useEffect(() => {
     void hydrateBoard();
     void refreshLeaderboard();
   }, [hydrateBoard, refreshLeaderboard]);
@@ -486,8 +763,9 @@ export default function App() {
       }
     };
 
-    window.ethereum?.on?.("accountsChanged", onAccountsChanged);
-    return () => window.ethereum?.removeListener?.("accountsChanged", onAccountsChanged);
+    const provider = getProvider();
+    provider?.on?.("accountsChanged", onAccountsChanged);
+    return () => provider?.removeListener?.("accountsChanged", onAccountsChanged);
   }, [refreshUserStats]);
 
   useEffect(() => {
@@ -499,7 +777,8 @@ export default function App() {
     const unsubscribers: Array<() => Promise<unknown>> = [];
 
     const startSubscriptions = async () => {
-      const canvasSub = await streamsSdk.streams.subscribe({
+      // Canvas events via Somnia Reactivity SDK (off-chain WebSocket mode)
+      const canvasSub = await reactivitySdk.subscribe({
         eventContractSources: [canvasAddress],
         topicOverrides: [pixelPlacedTopic],
         ethCalls: [],
@@ -508,14 +787,15 @@ export default function App() {
             handleCanvasStream(payload);
           }
         },
-        onError: (error) => console.error("Canvas stream error", error)
+        onError: (error) => console.error("Canvas reactivity subscription error", error)
       });
 
       if (!(canvasSub instanceof Error)) {
         unsubscribers.push(canvasSub.unsubscribe);
       }
 
-      const reactorSub = await streamsSdk.streams.subscribe({
+      // Reactor events via Somnia Reactivity SDK (off-chain WebSocket mode)
+      const reactorSub = await reactivitySdk.subscribe({
         eventContractSources: [reactorAddress],
         ethCalls: [],
         onData: (payload) => {
@@ -523,7 +803,7 @@ export default function App() {
             handleReactorStream(payload);
           }
         },
-        onError: (error) => console.error("Reactor stream error", error)
+        onError: (error) => console.error("Reactor reactivity subscription error", error)
       });
 
       if (!(reactorSub instanceof Error)) {
@@ -544,6 +824,7 @@ export default function App() {
   useEffect(() => {
     if (!hoverCell || !canvasAddress) {
       setHoverPixel(null);
+      setHoverOwnerScore(null);
       return;
     }
 
@@ -551,6 +832,20 @@ export default function App() {
     const cached = hoverCacheRef.current.get(cacheKey);
     if (cached) {
       setHoverPixel(cached);
+      // Feature 5: Fetch score for hovered pixel owner
+      if (cached.owner && reactorAddress) {
+        void readClient
+          .readContract({
+            address: reactorAddress,
+            abi: somniaPlaceReactorAbi,
+            functionName: "scores",
+            args: [cached.owner]
+          })
+          .then((score) => setHoverOwnerScore(score as bigint))
+          .catch(() => setHoverOwnerScore(null));
+      } else {
+        setHoverOwnerScore(null);
+      }
       return;
     }
 
@@ -566,6 +861,21 @@ export default function App() {
           const decoded = decodePackedPixel(packed as bigint);
           hoverCacheRef.current.set(cacheKey, decoded);
           setHoverPixel(decoded);
+
+          // Feature 5: Fetch score for hovered pixel owner
+          if (decoded.owner && reactorAddress) {
+            void readClient
+              .readContract({
+                address: reactorAddress,
+                abi: somniaPlaceReactorAbi,
+                functionName: "scores",
+                args: [decoded.owner]
+              })
+              .then((score) => setHoverOwnerScore(score as bigint))
+              .catch(() => setHoverOwnerScore(null));
+          } else {
+            setHoverOwnerScore(null);
+          }
         })
         .catch((error) => console.error("Failed to fetch hover pixel", error));
     }, 80);
@@ -618,6 +928,8 @@ export default function App() {
     txPending
   ]);
 
+  /* ── Canvas rendering (with heatmap + cooldown pulse overlays) ──────── */
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) {
@@ -639,57 +951,132 @@ export default function App() {
     context.clearRect(0, 0, surfaceSize.width, surfaceSize.height);
     context.imageSmoothingEnabled = false;
 
-    const gradient = context.createLinearGradient(0, 0, surfaceSize.width, surfaceSize.height);
-    gradient.addColorStop(0, "rgba(255, 107, 53, 0.16)");
-    gradient.addColorStop(1, "rgba(27, 154, 170, 0.12)");
-    context.fillStyle = gradient;
+    // Fill background
+    context.fillStyle = "#000";
     context.fillRect(0, 0, surfaceSize.width, surfaceSize.height);
 
+    // Uniform square cells: pick the smaller axis so pixels are perfect squares
+    const cell = Math.min(surfaceSize.width / boardWidth, surfaceSize.height / boardHeight);
+    const gridW = cell * boardWidth;
+    const gridH = cell * boardHeight;
+    const padX = Math.floor((surfaceSize.width - gridW) / 2);
+    const padY = Math.floor((surfaceSize.height - gridH) / 2);
+
+    const now = Date.now();
+
+    // Draw pixels
     for (let y = 0; y < boardHeight; y += 1) {
       for (let x = 0; x < boardWidth; x += 1) {
         const color = palette[board[pixelIndex(x, y, boardWidth)]] ?? palette[0];
         context.fillStyle = color;
         context.fillRect(
-          Math.floor(viewport.offsetX + x * viewport.scale),
-          Math.floor(viewport.offsetY + y * viewport.scale),
-          Math.ceil(viewport.scale),
-          Math.ceil(viewport.scale)
+          Math.floor(padX + x * cell),
+          Math.floor(padY + y * cell),
+          Math.ceil(cell),
+          Math.ceil(cell)
         );
       }
     }
 
-    if (viewport.scale >= 8) {
-      context.strokeStyle = "rgba(255, 255, 255, 0.08)";
+    // Feature 3: Heatmap glow overlay
+    if (heatmapEnabled) {
+      for (const [key, placedAt] of recentPixelsRef.current) {
+        const age = now - placedAt;
+        if (age > HEATMAP_FADE_MS) {
+          recentPixelsRef.current.delete(key);
+          continue;
+        }
+
+        const [xStr, yStr] = key.split(":");
+        const hx = Number(xStr);
+        const hy = Number(yStr);
+        const alpha = Math.max(0, 0.45 * (1 - age / HEATMAP_FADE_MS));
+
+        const cx = Math.floor(padX + hx * cell);
+        const cy = Math.floor(padY + hy * cell);
+        const cs = Math.ceil(cell);
+
+        // Additive glow
+        context.fillStyle = `rgba(255, 107, 53, ${alpha.toFixed(3)})`;
+        context.fillRect(cx, cy, cs, cs);
+
+        // Outer glow when very recent
+        if (age < 5000 && cell >= 4) {
+          const glowAlpha = Math.max(0, 0.3 * (1 - age / 5000));
+          context.shadowColor = `rgba(255, 107, 53, ${glowAlpha.toFixed(3)})`;
+          context.shadowBlur = cell * 1.5;
+          context.fillStyle = `rgba(255, 107, 53, ${(glowAlpha * 0.3).toFixed(3)})`;
+          context.fillRect(cx, cy, cs, cs);
+          context.shadowColor = "transparent";
+          context.shadowBlur = 0;
+        }
+      }
+    }
+
+    // Feature 6: Cooldown pulse overlay for penalized pixels
+    for (const [key, expiry] of penalizedPixelsRef.current) {
+      if (now > expiry) {
+        penalizedPixelsRef.current.delete(key);
+        continue;
+      }
+
+      const [xStr, yStr] = key.split(":");
+      const px = Number(xStr);
+      const py = Number(yStr);
+
+      const remaining = expiry - now;
+      // Pulsing effect — oscillate alpha using sine wave
+      const pulse = 0.15 + 0.25 * Math.abs(Math.sin((now / 300) * Math.PI));
+      const fadeOut = Math.min(1, remaining / 2000); // fade in last 2s
+
+      const cx = Math.floor(padX + px * cell);
+      const cy = Math.floor(padY + py * cell);
+      const cs = Math.ceil(cell);
+
+      context.fillStyle = `rgba(239, 71, 111, ${(pulse * fadeOut).toFixed(3)})`;
+      context.fillRect(cx, cy, cs, cs);
+
+      // Red border pulse
+      if (cell >= 4) {
+        context.strokeStyle = `rgba(239, 71, 111, ${(0.6 * fadeOut).toFixed(3)})`;
+        context.lineWidth = 1;
+        context.strokeRect(cx + 0.5, cy + 0.5, cs - 1, cs - 1);
+      }
+    }
+
+    // Draw grid lines when cells are large enough
+    if (cell >= 6) {
+      context.strokeStyle = "rgba(255, 255, 255, 0.06)";
       context.lineWidth = 1;
 
       for (let x = 0; x <= boardWidth; x += 1) {
-        const drawX = Math.floor(viewport.offsetX + x * viewport.scale) + 0.5;
+        const drawX = Math.floor(padX + x * cell) + 0.5;
         context.beginPath();
-        context.moveTo(drawX, viewport.offsetY);
-        context.lineTo(drawX, viewport.offsetY + boardHeight * viewport.scale);
+        context.moveTo(drawX, padY);
+        context.lineTo(drawX, padY + gridH);
         context.stroke();
       }
 
       for (let y = 0; y <= boardHeight; y += 1) {
-        const drawY = Math.floor(viewport.offsetY + y * viewport.scale) + 0.5;
+        const drawY = Math.floor(padY + y * cell) + 0.5;
         context.beginPath();
-        context.moveTo(viewport.offsetX, drawY);
-        context.lineTo(viewport.offsetX + boardWidth * viewport.scale, drawY);
+        context.moveTo(padX, drawY);
+        context.lineTo(padX + gridW, drawY);
         context.stroke();
       }
     }
 
+    // Hover highlight
     if (hoverCell) {
+      const hx = Math.floor(padX + hoverCell.x * cell);
+      const hy = Math.floor(padY + hoverCell.y * cell);
+      const hs = Math.ceil(cell);
+
       context.strokeStyle = txPending ? "#ffd166" : "#f2f3ef";
       context.lineWidth = 2;
-      context.strokeRect(
-        Math.floor(viewport.offsetX + hoverCell.x * viewport.scale) + 1,
-        Math.floor(viewport.offsetY + hoverCell.y * viewport.scale) + 1,
-        Math.max(2, Math.ceil(viewport.scale) - 2),
-        Math.max(2, Math.ceil(viewport.scale) - 2)
-      );
+      context.strokeRect(hx + 1, hy + 1, hs - 2, hs - 2);
     }
-  }, [board, hoverCell, surfaceSize.height, surfaceSize.width, txPending, viewport]);
+  }, [board, hoverCell, surfaceSize.height, surfaceSize.width, txPending, heatmapEnabled, clock]);
 
   const getCellFromPointer = (clientX: number, clientY: number): HoverCell | null => {
     const canvas = canvasRef.current;
@@ -698,8 +1085,14 @@ export default function App() {
     }
 
     const rect = canvas.getBoundingClientRect();
-    const x = Math.floor((clientX - rect.left - viewport.offsetX) / viewport.scale);
-    const y = Math.floor((clientY - rect.top - viewport.offsetY) / viewport.scale);
+    const cell = Math.min(rect.width / boardWidth, rect.height / boardHeight);
+    const gridW = cell * boardWidth;
+    const gridH = cell * boardHeight;
+    const padX = (rect.width - gridW) / 2;
+    const padY = (rect.height - gridH) / 2;
+
+    const x = Math.floor((clientX - rect.left - padX) / cell);
+    const y = Math.floor((clientY - rect.top - padY) / cell);
 
     if (x < 0 || x >= boardWidth || y < 0 || y >= boardHeight) {
       return null;
@@ -709,37 +1102,10 @@ export default function App() {
   };
 
   const handlePointerMove = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-    if (panRef.current && panRef.current.pointerId === event.pointerId) {
-      setViewport((current) => ({
-        ...current,
-        offsetX: panRef.current!.originX + (event.clientX - panRef.current!.startX),
-        offsetY: panRef.current!.originY + (event.clientY - panRef.current!.startY)
-      }));
-      return;
-    }
-
     setHoverCell(getCellFromPointer(event.clientX, event.clientY));
   };
 
-  const handlePointerDown = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-    if (event.button === 2 || event.shiftKey) {
-      panRef.current = {
-        pointerId: event.pointerId,
-        startX: event.clientX,
-        startY: event.clientY,
-        originX: viewport.offsetX,
-        originY: viewport.offsetY
-      };
-      event.currentTarget.setPointerCapture(event.pointerId);
-    }
-  };
-
   const handlePointerUp = (event: ReactPointerEvent<HTMLCanvasElement>) => {
-    if (panRef.current && panRef.current.pointerId === event.pointerId) {
-      panRef.current = null;
-      return;
-    }
-
     if (event.button !== 0 || txPending) {
       return;
     }
@@ -750,32 +1116,13 @@ export default function App() {
     }
   };
 
-  const handleWheel = (event: ReactWheelEvent<HTMLCanvasElement>) => {
-    event.preventDefault();
-
-    const canvas = canvasRef.current;
-    if (!canvas) {
-      return;
+  /* Auto-scroll feed list when new entries arrive */
+  useEffect(() => {
+    const el = feedListRef.current;
+    if (el && el.scrollTop < 60) {
+      el.scrollTo({ top: 0, behavior: "smooth" });
     }
-
-    const rect = canvas.getBoundingClientRect();
-    const pointerX = event.clientX - rect.left;
-    const pointerY = event.clientY - rect.top;
-
-    setViewport((current) => {
-      const zoomFactor = event.deltaY < 0 ? 1.14 : 0.88;
-      const nextScale = clamp(current.scale * zoomFactor, 4, 42);
-      const worldX = (pointerX - current.offsetX) / current.scale;
-      const worldY = (pointerY - current.offsetY) / current.scale;
-
-      return {
-        ...current,
-        scale: nextScale,
-        offsetX: pointerX - worldX * nextScale,
-        offsetY: pointerY - worldY * nextScale
-      };
-    });
-  };
+  }, [feed]);
 
   return (
     <div className="app-shell">
@@ -790,6 +1137,12 @@ export default function App() {
         </div>
         
         <div className="header-actions">
+          {/* Feature 4: Multi-user indicator */}
+          <div className="multi-user-badge">
+            <Users size={14} />
+            <span>{uniqueBuilders.size} builder{uniqueBuilders.size !== 1 ? "s" : ""}</span>
+          </div>
+
           <div className="status-indicator">
             <Activity size={14} className="panel-icon" />
             <span>{status.length > 30 ? `${status.substring(0, 30)}...` : status}</span>
@@ -838,6 +1191,24 @@ export default function App() {
                   {pendingCell ? `${pendingCell.x},${pendingCell.y}` : txPending ? "WAITING" : "NONE"}
                 </strong>
               </div>
+
+              {/* Feature 2 + 3: Toggle buttons */}
+              <div className="toolbar-toggles">
+                <button
+                  className={`toggle-btn ${soundEnabled ? "active" : ""}`}
+                  onClick={() => setSoundEnabled((v) => !v)}
+                  title={soundEnabled ? "Mute sounds" : "Enable sounds"}
+                >
+                  {soundEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}
+                </button>
+                <button
+                  className={`toggle-btn ${heatmapEnabled ? "active" : ""}`}
+                  onClick={() => setHeatmapEnabled((v) => !v)}
+                  title={heatmapEnabled ? "Hide heatmap" : "Show heatmap"}
+                >
+                  <Flame size={14} />
+                </button>
+              </div>
             </div>
           </div>
 
@@ -847,9 +1218,7 @@ export default function App() {
               onContextMenu={(event) => event.preventDefault()}
               onPointerMove={handlePointerMove}
               onPointerLeave={() => setHoverCell(null)}
-              onPointerDown={handlePointerDown}
               onPointerUp={handlePointerUp}
-              onWheel={handleWheel}
             />
           </div>
         </motion.section>
@@ -860,10 +1229,11 @@ export default function App() {
           transition={{ delay: 0.2 }}
           className="sidebar"
         >
+          {/* Feature 5: Enhanced Hover Detail / Player Profile */}
           <div className="panel">
             <div className="panel-header">
               <MapIcon size={18} className="panel-icon" />
-              Hover Detail
+              Pixel Detail
             </div>
             
             <h2 className="mono" style={{ color: hoverCell ? "var(--text-primary)" : "var(--text-muted)", fontSize: "1.2rem" }}>
@@ -873,7 +1243,17 @@ export default function App() {
             <div className="data-grid">
               <div className="data-card">
                 <span className="data-label">Color ID</span>
-                <span className="data-value">{hoverPixel ? hoverPixel.color : "-"}</span>
+                <span className="data-value">
+                  {hoverPixel ? (
+                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span
+                        className="data-color-dot"
+                        style={{ backgroundColor: palette[hoverPixel.color] ?? palette[0] }}
+                      />
+                      {hoverPixel.color}
+                    </span>
+                  ) : "-"}
+                </span>
               </div>
               <div className="data-card">
                 <span className="data-label">Owner</span>
@@ -886,6 +1266,17 @@ export default function App() {
               <div className="data-card">
                 <span className="data-label">Overwrites</span>
                 <span className="data-value">{hoverPixel?.overwriteCount ?? "-"}</span>
+              </div>
+              <div className="data-card full-width">
+                <span className="data-label">Owner Score</span>
+                <span className="data-value">
+                  {hoverPixel?.owner ? (
+                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <Trophy size={12} color="var(--warning)" />
+                      {hoverOwnerScore !== null ? `${hoverOwnerScore.toString()} pts` : "..."}
+                    </span>
+                  ) : "-"}
+                </span>
               </div>
             </div>
           </div>
@@ -924,16 +1315,41 @@ export default function App() {
             )}
           </div>
 
-          <div className="panel">
+          {/* Feature 1: Live Activity Feed */}
+          <div className="panel feed-panel">
             <div className="panel-header">
-              <Network size={18} className="panel-icon" />
-              Live Feed
+              <Zap size={18} className="panel-icon" />
+              Live Activity
+              {feed.length > 0 && <span className="feed-count">{feed.length}</span>}
             </div>
-            <ul className="list-basic">
-              <li>Direct wallet writes to Canvas contract</li>
-              <li>Reactivity scores & penalizes local play</li>
-              <li>Streams pushes live WebSocket events</li>
-            </ul>
+
+            {feed.length === 0 ? (
+              <div className="empty-state">Waiting for Reactivity events...</div>
+            ) : (
+              <ul className="feed-list" ref={feedListRef}>
+                <AnimatePresence initial={false}>
+                  {feed.slice(0, 20).map((entry) => (
+                    <motion.li
+                      key={entry.id}
+                      initial={{ opacity: 0, x: -10, height: 0 }}
+                      animate={{ opacity: 1, x: 0, height: "auto" }}
+                      exit={{ opacity: 0, height: 0 }}
+                      transition={{ duration: 0.2 }}
+                      className="feed-item"
+                    >
+                      <span
+                        className="feed-badge"
+                        style={{ background: feedKindColors[entry.kind] }}
+                      >
+                        {feedKindIcons[entry.kind]}
+                      </span>
+                      <span className="feed-msg">{entry.message}</span>
+                      <span className="feed-time">{timeAgo(Date.now() - entry.timestamp)}</span>
+                    </motion.li>
+                  ))}
+                </AnimatePresence>
+              </ul>
+            )}
           </div>
         </motion.aside>
       </main>

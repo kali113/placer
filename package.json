@@ -11,13 +11,12 @@
     "build": "npm run compile && npm run frontend:build",
     "deploy": "npm run compile && tsx scripts/deploy.ts",
     "setup:subscription": "tsx scripts/setupSubscription.ts",
-    "setup:streams": "tsx scripts/setupDataStream.ts",
+    "schedule:cron": "tsx scripts/scheduleCronRound.ts",
     "frontend:dev": "npm run dev --workspace frontend",
     "frontend:build": "npm run build --workspace frontend"
   },
   "dependencies": {
     "@somnia-chain/reactivity": "^0.1.10",
-    "@somnia-chain/streams": "^0.12.2",
     "dotenv": "^16.6.1",
     "viem": "~2.37.8"
   },

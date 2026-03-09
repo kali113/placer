@@ -1,0 +1,22 @@
+{
+  "network": {
+    "name": "somnia-shannon",
+    "chainId": 50312,
+    "rpcUrl": "https://dream-rpc.somnia.network",
+    "wsUrl": "wss://dream-rpc.somnia.network/ws",
+    "explorerUrl": "https://shannon.somnia.network"
+  },
+  "canvas": {
+    "address": "0x199D3e126b2BE52954F5DFCc145463a96659cb19",
+    "width": 100,
+    "height": 100,
+    "paletteSize": 16
+  },
+  "reactor": {
+    "address": "0xf9CBa4cD9dfDd8dBE88C7345CCFb04495d13Bf1b"
+  },
+  "reactivity": {
+    "subscriptionId": "4614",
+    "subscriptionTxHash": "0x81d89489ed5cff83f23f22625bd570c95f52c7da685a4471f83bb5b77b8615e6"
+  }
+}
