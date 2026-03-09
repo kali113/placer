@@ -274,6 +274,8 @@ export default function App() {
   const hoverCacheRef = useRef<Map<string, DecodedPixel>>(new Map());
   const virtualNowOffsetRef = useRef(0);
   const soundEnabledRef = useRef(false);
+  const chainVerifiedRef = useRef(false);
+  const walletClientRef = useRef<ReturnType<typeof createWalletClient> | null>(null);
 
   /* Recent pixel timestamps for heatmap (key = "x:y", value = Date.now()) */
   const recentPixelsRef = useRef<Map<string, number>>(new Map());
@@ -281,7 +283,7 @@ export default function App() {
   /* Penalized pixel coords for cooldown pulse (key = "x:y", value = expiry Date.now()) */
   const penalizedPixelsRef = useRef<Map<string, number>>(new Map());
 
-  const [surfaceSize, setSurfaceSize] = useState({ width: 960, height: 720 });
+  const [surfaceSize, setSurfaceSize] = useState(960);
   const [board, setBoard] = useState<Uint8Array>(emptyBoard);
   const [account, setAccount] = useState<Address | null>(null);
   const [selectedColor, setSelectedColor] = useState(2);
@@ -434,6 +436,8 @@ export default function App() {
   });
 
   const ensureSomniaWalletChain = useEffectEvent(async () => {
+    if (chainVerifiedRef.current) return;
+
     const provider = getProvider();
     if (!provider) {
       throw new Error("No injected wallet found. Install MetaMask.");
@@ -468,6 +472,8 @@ export default function App() {
         ]
       });
     }
+
+    chainVerifiedRef.current = true;
   });
 
   const connectWallet = useEffectEvent(async () => {
@@ -528,17 +534,24 @@ export default function App() {
     try {
       await ensureSomniaWalletChain();
 
-      const walletClient = createWalletClient({
-        account: currentAccount,
-        chain: somniaShannon,
-        transport: custom(provider)
-      });
+      // Reuse cached wallet client if same account
+      let walletClient = walletClientRef.current;
+      if (!walletClient || walletClient.account?.address !== currentAccount) {
+        walletClient = createWalletClient({
+          account: currentAccount,
+          chain: somniaShannon,
+          transport: custom(provider)
+        });
+        walletClientRef.current = walletClient;
+      }
 
       setTxPending(true);
       setPendingCell(cell);
       setStatus(`Submitting pixel at ${cell.x},${cell.y}…`);
 
       const hash = await walletClient.writeContract({
+        chain: somniaShannon,
+        account: currentAccount,
         address: canvasAddress,
         abi: somniaPlaceAbi,
         functionName: "placePixel",
@@ -725,10 +738,9 @@ export default function App() {
         return;
       }
 
-      setSurfaceSize({
-        width: Math.max(320, Math.floor(next.width)),
-        height: Math.max(320, Math.floor(next.height))
-      });
+      // Use the smaller dimension so the canvas is always a perfect square
+      const side = Math.max(320, Math.floor(Math.min(next.width, next.height)));
+      setSurfaceSize(side);
     });
 
     observer.observe(shell);
@@ -758,6 +770,8 @@ export default function App() {
     const onAccountsChanged = (accounts: unknown) => {
       const next = Array.isArray(accounts) && accounts[0] ? getAddress(accounts[0] as Address) : null;
       setAccount(next);
+      chainVerifiedRef.current = false;
+      walletClientRef.current = null;
       if (next) {
         void refreshUserStats(next);
       }
@@ -822,7 +836,7 @@ export default function App() {
   }, [handleCanvasStream, handleReactorStream]);
 
   useEffect(() => {
-    if (!hoverCell || !canvasAddress) {
+    if (!hoverCell) {
       setHoverPixel(null);
       setHoverOwnerScore(null);
       return;
@@ -857,28 +871,30 @@ export default function App() {
           functionName: "getPixelPacked",
           args: [hoverCell.x, hoverCell.y]
         })
-        .then((packed) => {
+        .then(async (packed) => {
           const decoded = decodePackedPixel(packed as bigint);
           hoverCacheRef.current.set(cacheKey, decoded);
           setHoverPixel(decoded);
 
           // Feature 5: Fetch score for hovered pixel owner
           if (decoded.owner && reactorAddress) {
-            void readClient
-              .readContract({
+            try {
+              const score = await readClient.readContract({
                 address: reactorAddress,
                 abi: somniaPlaceReactorAbi,
                 functionName: "scores",
                 args: [decoded.owner]
-              })
-              .then((score) => setHoverOwnerScore(score as bigint))
-              .catch(() => setHoverOwnerScore(null));
+              });
+              setHoverOwnerScore(score as bigint);
+            } catch {
+              setHoverOwnerScore(null);
+            }
           } else {
             setHoverOwnerScore(null);
           }
         })
         .catch((error) => console.error("Failed to fetch hover pixel", error));
-    }, 80);
+    }, 20);
 
     return () => window.clearTimeout(timer);
   }, [hoverCell]);
@@ -937,10 +953,10 @@ export default function App() {
     }
 
     const devicePixelRatio = window.devicePixelRatio || 1;
-    canvas.width = Math.floor(surfaceSize.width * devicePixelRatio);
-    canvas.height = Math.floor(surfaceSize.height * devicePixelRatio);
-    canvas.style.width = `${surfaceSize.width}px`;
-    canvas.style.height = `${surfaceSize.height}px`;
+    canvas.width = Math.floor(surfaceSize * devicePixelRatio);
+    canvas.height = Math.floor(surfaceSize * devicePixelRatio);
+    canvas.style.width = `${surfaceSize}px`;
+    canvas.style.height = `${surfaceSize}px`;
 
     const context = canvas.getContext("2d");
     if (!context) {
@@ -948,19 +964,19 @@ export default function App() {
     }
 
     context.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
-    context.clearRect(0, 0, surfaceSize.width, surfaceSize.height);
+    context.clearRect(0, 0, surfaceSize, surfaceSize);
     context.imageSmoothingEnabled = false;
 
     // Fill background
     context.fillStyle = "#000";
-    context.fillRect(0, 0, surfaceSize.width, surfaceSize.height);
+    context.fillRect(0, 0, surfaceSize, surfaceSize);
 
-    // Uniform square cells: pick the smaller axis so pixels are perfect squares
-    const cell = Math.min(surfaceSize.width / boardWidth, surfaceSize.height / boardHeight);
-    const gridW = cell * boardWidth;
-    const gridH = cell * boardHeight;
-    const padX = Math.floor((surfaceSize.width - gridW) / 2);
-    const padY = Math.floor((surfaceSize.height - gridH) / 2);
+    // Uniform square cells
+    const cell = surfaceSize / boardWidth;
+    const gridW = surfaceSize;
+    const gridH = surfaceSize;
+    const padX = 0;
+    const padY = 0;
 
     const now = Date.now();
 
@@ -1076,7 +1092,7 @@ export default function App() {
       context.lineWidth = 2;
       context.strokeRect(hx + 1, hy + 1, hs - 2, hs - 2);
     }
-  }, [board, hoverCell, surfaceSize.height, surfaceSize.width, txPending, heatmapEnabled, clock]);
+  }, [board, hoverCell, surfaceSize, txPending, heatmapEnabled, clock]);
 
   const getCellFromPointer = (clientX: number, clientY: number): HoverCell | null => {
     const canvas = canvasRef.current;
@@ -1085,14 +1101,11 @@ export default function App() {
     }
 
     const rect = canvas.getBoundingClientRect();
-    const cell = Math.min(rect.width / boardWidth, rect.height / boardHeight);
-    const gridW = cell * boardWidth;
-    const gridH = cell * boardHeight;
-    const padX = (rect.width - gridW) / 2;
-    const padY = (rect.height - gridH) / 2;
+    const side = Math.min(rect.width, rect.height);
+    const cell = side / boardWidth;
 
-    const x = Math.floor((clientX - rect.left - padX) / cell);
-    const y = Math.floor((clientY - rect.top - padY) / cell);
+    const x = Math.floor((clientX - rect.left) / cell);
+    const y = Math.floor((clientY - rect.top) / cell);
 
     if (x < 0 || x >= boardWidth || y < 0 || y >= boardHeight) {
       return null;
