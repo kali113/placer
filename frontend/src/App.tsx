@@ -193,11 +193,11 @@ interface HoverCell {
   y: number;
 }
 
-const canvasAddress = import.meta.env.VITE_SOMNIA_PLACE_ADDRESS as Address | undefined;
-const reactorAddress = import.meta.env.VITE_SOMNIA_REACTOR_ADDRESS as Address | undefined;
-const boardWidth = Number(import.meta.env.VITE_CANVAS_WIDTH ?? 100);
-const boardHeight = Number(import.meta.env.VITE_CANVAS_HEIGHT ?? 100);
-const paletteSize = Number(import.meta.env.VITE_PALETTE_SIZE ?? 16);
+const canvasAddress = "0x199D3e126b2BE52954F5DFCc145463a96659cb19" as Address;
+const reactorAddress = "0xf9CBa4cD9dfDd8dBE88C7345CCFb04495d13Bf1b" as Address;
+const boardWidth = 100;
+const boardHeight = 100;
+const paletteSize = 16;
 const leaderboardLimit = 8n;
 
 /** Heatmap glow fades after this many ms. */
