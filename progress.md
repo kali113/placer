@@ -26,3 +26,12 @@ Original prompt: Build SomniaPlace from the provided implementation brief, using
   - Added `.github/workflows/deploy-pages.yml` using the official Pages Actions flow and repository variables for build-time contract addresses.
   - Updated README with Pages setup steps and the required repository variables.
 - Important gotcha resolved: stale generated `frontend/vite.config.js` / `.d.ts` files were shadowing `vite.config.ts`, which would have broken repo-path base handling. Those generated config artifacts were removed.
+2026-03-11
+- Implemented the frontend performance pass against the current component/hook-based UI rather than the older monolithic `App.tsx` path.
+- Moved board storage to a mutable `Uint8Array` ref in `useCanvasBoard` and replaced full React board-state churn with imperative canvas invalidation via a new layered `BoardCanvas`.
+- Reworked `Canvas.tsx` to use the layered canvas renderer, local cooldown ticking, and stable imperative redraw hooks instead of repainting the entire surface from React on every state change.
+- Debounced and deduped hover metadata reads in `App.tsx`, added owner-score caching, and restored `window.render_game_to_text` / `window.advanceTime` for browser automation.
+- Coalesced leaderboard refreshes in `useGameStats`, lazy-loaded wallet client creation in `useWallet`, and removed runtime `framer-motion` usage from shared UI primitives.
+- Production build now passes and emits a smaller main bootstrap chunk than the earlier 600kB-class bundle observed before the refactor.
+- Verified with the `develop-web-game` Playwright client against `http://127.0.0.1:5173`: latest `render_game_to_text` reports the expected hydrated ready state and the prior `Buffer is not defined` page error did not reappear after the final pass.
+- Removed the now-unused `framer-motion` dependency from the frontend workspace after replacing its runtime usage with CSS-driven transitions / plain elements.
