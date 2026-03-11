@@ -11,7 +11,7 @@ Somnia Reactivity is the core differentiator of this project. It is a dual-mode 
 When a user places a pixel, the `SomniaPlace.sol` canvas contract emits a `PixelPlaced` event. The Somnia Reactivity Precompile (`0x0100`) intercepts this event at the validator level and automatically invokes our `SomniaPlaceReactor.sol` handler contract — with zero off-chain infrastructure, no indexers, no keepers, no cron jobs.
 
 The Reactor then executes game logic atomically:
-- **Territory scoring** — BFS cluster detection around the placed pixel; larger clusters earn exponentially more points (`clusterSize * 2`)
+- **Territory scoring** — Every placement earns at least 1 point; larger clusters still earn `clusterSize * 2`
 - **Pattern rewards** — Detects 2x2 blocks (+8 pts), horizontal-4 lines (+6 pts), vertical-4 lines (+6 pts) owned by the same player
 - **Anti-griefing** — Tracks overwrite streaks per pixel; repeated overwrites trigger escalating cooldown penalties via `canvas.setPenaltyCooldown()`
 - **Decay sweep** — Stale neighboring pixels (>30 min since last update) are reset via `canvas.decayPixel()`

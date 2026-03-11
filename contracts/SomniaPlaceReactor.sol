@@ -51,6 +51,8 @@ contract SomniaPlaceReactor is SomniaEventHandler {
     uint64 private constant OVERWRITE_BLOCK_WINDOW = 25;
     uint16 private constant OVERWRITE_STREAK_THRESHOLD = 3;
     uint8 private constant CLUSTER_RADIUS = 2;
+    uint8 private constant BASE_PLACEMENT_POINTS = 1;
+    uint8 private constant TERRITORY_SCORE_CLUSTER_THRESHOLD = 3;
 
     uint256 private constant COLOR_MASK = type(uint8).max;
     uint256 private constant LAST_UPDATED_OFFSET = 168;
@@ -148,11 +150,9 @@ contract SomniaPlaceReactor is SomniaEventHandler {
 
     function _applyTerritoryScore(address placer, uint16 x, uint16 y, uint8 color) internal {
         uint256 clusterSize = _estimateClusterSize(x, y, color);
-        if (clusterSize < 3) {
-            return;
-        }
-
-        uint256 pointsAwarded = clusterSize * 2;
+        uint256 pointsAwarded = clusterSize >= TERRITORY_SCORE_CLUSTER_THRESHOLD
+            ? clusterSize * 2
+            : BASE_PLACEMENT_POINTS;
         uint256 totalScore = _awardPoints(placer, pointsAwarded);
 
         emit TerritoryScored(placer, _pixelId(x, y), clusterSize, pointsAwarded, totalScore);
