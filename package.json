@@ -10,6 +10,7 @@
     "compile": "hardhat compile",
     "build": "npm run compile && npm run frontend:build",
     "deploy": "npm run compile && tsx scripts/deploy.ts",
+    "upgrade:reactor": "npm run compile && tsx scripts/upgradeReactor.ts",
     "setup:subscription": "tsx scripts/setupSubscription.ts",
     "schedule:cron": "tsx scripts/scheduleCronRound.ts",
     "frontend:dev": "npm run dev --workspace frontend",

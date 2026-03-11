@@ -18,19 +18,34 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      VITE_SOMNIA_CHAIN_ID: "50312"
-      VITE_SOMNIA_RPC_URL: "https://dream-rpc.somnia.network"
-      VITE_SOMNIA_WS_URL: "wss://dream-rpc.somnia.network/ws"
-      VITE_SOMNIA_EXPLORER_URL: "https://shannon-explorer.somnia.network"
-      VITE_SOMNIA_PLACE_ADDRESS: ${{ vars.VITE_SOMNIA_PLACE_ADDRESS }}
-      VITE_SOMNIA_REACTOR_ADDRESS: ${{ vars.VITE_SOMNIA_REACTOR_ADDRESS }}
-      VITE_CANVAS_WIDTH: ${{ vars.VITE_CANVAS_WIDTH }}
-      VITE_CANVAS_HEIGHT: ${{ vars.VITE_CANVAS_HEIGHT }}
-      VITE_PALETTE_SIZE: ${{ vars.VITE_PALETTE_SIZE }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: Load deployment manifest
+        run: |
+          node --input-type=module <<'EOF' >> "$GITHUB_ENV"
+          import { readFileSync } from "node:fs";
+
+          const deployment = JSON.parse(readFileSync("deployments/shannon.json", "utf8"));
+          if (!deployment.canvas?.address || !deployment.reactor?.address) {
+            throw new Error("deployments/shannon.json is missing canvas/reactor addresses");
+          }
+
+          const lines = [
+            `VITE_SOMNIA_CHAIN_ID=${deployment.network.chainId}`,
+            `VITE_SOMNIA_RPC_URL=${deployment.network.rpcUrl}`,
+            `VITE_SOMNIA_WS_URL=${deployment.network.wsUrl}`,
+            `VITE_SOMNIA_EXPLORER_URL=${deployment.network.explorerUrl}`,
+            `VITE_SOMNIA_PLACE_ADDRESS=${deployment.canvas.address}`,
+            `VITE_SOMNIA_REACTOR_ADDRESS=${deployment.reactor.address}`,
+            `VITE_CANVAS_WIDTH=${deployment.canvas.width}`,
+            `VITE_CANVAS_HEIGHT=${deployment.canvas.height}`,
+            `VITE_PALETTE_SIZE=${deployment.canvas.paletteSize}`
+          ];
+
+          process.stdout.write(`${lines.join("\n")}\n`);
+          EOF
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
