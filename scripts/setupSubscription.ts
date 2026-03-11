@@ -22,6 +22,7 @@ import { readDeployment, upsertDeployment } from "./lib/deployments.js";
 import {
   REACTIVITY_PRECOMPILE_ADDRESS,
   SHANNON_RPC_URL,
+  envNumber,
   requirePrivateKey,
   somniaShannon
 } from "./lib/somnia.js";
@@ -29,6 +30,57 @@ import {
 const subscriptionCreatedEvent = parseAbiItem(
   "event SubscriptionCreated(uint256 indexed subscriptionId, address indexed owner, (bytes32[4] eventTopics, address origin, address caller, address emitter, address handlerContractAddress, bytes4 handlerFunctionSelector, uint64 priorityFeePerGas, uint64 maxFeePerGas, uint64 gasLimit, bool isGuaranteed, bool isCoalesced) subscriptionData)"
 );
+
+const defaultPriorityFeeGwei = "2";
+const defaultMaxFeeGwei = "20";
+const defaultSubscriptionGasLimit = 5_000_000n;
+const zeroTopic = `0x${"0".repeat(64)}` as Hex;
+
+function envGwei(name: string, fallback: string): bigint {
+  return parseGwei(process.env[name] ?? fallback);
+}
+
+function normalizeTopics(topics: readonly Hex[] | undefined): string[] {
+  const normalized = (topics ?? []).map((topic) => topic.toLowerCase());
+  while (normalized.length > 0 && normalized[normalized.length - 1] === zeroTopic) {
+    normalized.pop();
+  }
+  return normalized;
+}
+
+function sameTopics(left: readonly Hex[] | undefined, right: readonly Hex[]): boolean {
+  const normalizedLeft = normalizeTopics(left);
+  const normalizedRight = normalizeTopics(right);
+
+  if (normalizedLeft.length !== normalizedRight.length) {
+    return false;
+  }
+
+  return normalizedRight.every((topic, index) => normalizedLeft[index] === topic);
+}
+
+function sameSubscriptionConfig(
+  current: SoliditySubscriptionData,
+  expected: SoliditySubscriptionData
+): boolean {
+  return (
+    sameTopics(current.eventTopics, expected.eventTopics ?? []) &&
+    (current.origin ?? "0x0000000000000000000000000000000000000000").toLowerCase() ===
+      (expected.origin ?? "0x0000000000000000000000000000000000000000").toLowerCase() &&
+    (current.caller ?? "0x0000000000000000000000000000000000000000").toLowerCase() ===
+      (expected.caller ?? "0x0000000000000000000000000000000000000000").toLowerCase() &&
+    (current.emitter ?? "0x0000000000000000000000000000000000000000").toLowerCase() ===
+      (expected.emitter ?? "0x0000000000000000000000000000000000000000").toLowerCase() &&
+    current.handlerContractAddress.toLowerCase() === expected.handlerContractAddress.toLowerCase() &&
+    (current.handlerFunctionSelector ?? "0x53edf33d").toLowerCase() ===
+      (expected.handlerFunctionSelector ?? "0x53edf33d").toLowerCase() &&
+    current.priorityFeePerGas === expected.priorityFeePerGas &&
+    current.maxFeePerGas === expected.maxFeePerGas &&
+    current.gasLimit === expected.gasLimit &&
+    current.isGuaranteed === expected.isGuaranteed &&
+    current.isCoalesced === expected.isCoalesced
+  );
+}
 
 async function main(): Promise<void> {
   const deployment = await readDeployment();
@@ -53,16 +105,59 @@ async function main(): Promise<void> {
   });
 
   const pixelPlacedTopic = keccak256(toBytes("PixelPlaced(address,uint16,uint16,uint8,uint256)"));
+  const priorityFeePerGas = envGwei("REACTIVITY_PRIORITY_FEE_GWEI", defaultPriorityFeeGwei);
+  const maxFeePerGas = envGwei("REACTIVITY_MAX_FEE_GWEI", defaultMaxFeeGwei);
+  const gasLimit = BigInt(envNumber("REACTIVITY_GAS_LIMIT", Number(defaultSubscriptionGasLimit)));
   const subscriptionData: SoliditySubscriptionData = {
     handlerContractAddress: deployment.reactor.address,
     emitter: deployment.canvas.address,
     eventTopics: [pixelPlacedTopic],
-    priorityFeePerGas: parseGwei("2"),
-    maxFeePerGas: parseGwei("10"),
-    gasLimit: 500_000n,
+    priorityFeePerGas,
+    maxFeePerGas,
+    gasLimit,
     isGuaranteed: true,
     isCoalesced: false
   };
+
+  const existingSubscriptionId = deployment.reactivity?.subscriptionId
+    ? BigInt(deployment.reactivity.subscriptionId)
+    : undefined;
+
+  if (existingSubscriptionId !== undefined) {
+    const existingInfo = await sdk.getSubscriptionInfo(existingSubscriptionId);
+    if (!(existingInfo instanceof Error)) {
+      if (existingInfo.owner.toLowerCase() !== account.address.toLowerCase()) {
+        throw new Error(
+          `Subscription ${existingSubscriptionId.toString()} is owned by ${existingInfo.owner}, not ${account.address}.`
+        );
+      }
+
+      if (sameSubscriptionConfig(existingInfo.subscriptionData, subscriptionData)) {
+        console.log("Existing subscription already matches requested configuration.");
+        console.log(`  subscriptionId:  ${existingSubscriptionId.toString()}`);
+        console.log(`  emitter:         ${deployment.canvas.address}`);
+        console.log(`  handler:         ${deployment.reactor.address}`);
+        console.log(`  topic:           ${pixelPlacedTopic}`);
+        console.log(`  gasLimit:        ${gasLimit.toString()}`);
+        console.log(`  priorityFee:     ${priorityFeePerGas.toString()}`);
+        console.log(`  maxFee:          ${maxFeePerGas.toString()}`);
+        return;
+      }
+
+      console.log(
+        `Replacing subscription ${existingSubscriptionId.toString()} to apply updated callback gas/fee settings.`
+      );
+
+      const cancelHash = await sdk.cancelSoliditySubscription(existingSubscriptionId);
+      if (cancelHash instanceof Error) {
+        throw cancelHash;
+      }
+
+      const cancelReceipt = await publicClient.waitForTransactionReceipt({ hash: cancelHash });
+      console.log(`  cancelled with tx: ${cancelHash}`);
+      console.log(`  cancel status:     ${cancelReceipt.status}`);
+    }
+  }
 
   const txHash = await sdk.createSoliditySubscription(subscriptionData);
   if (txHash instanceof Error) {
@@ -137,6 +232,9 @@ async function main(): Promise<void> {
   console.log(`  emitter:         ${deployment.canvas.address}`);
   console.log(`  handler:         ${deployment.reactor.address}`);
   console.log(`  topic:           ${pixelPlacedTopic}`);
+  console.log(`  gasLimit:        ${gasLimit.toString()}`);
+  console.log(`  priorityFee:     ${priorityFeePerGas.toString()}`);
+  console.log(`  maxFee:          ${maxFeePerGas.toString()}`);
 
   if (subscriptionId) {
     const subscriptionInfo = await sdk.getSubscriptionInfo(subscriptionId);
