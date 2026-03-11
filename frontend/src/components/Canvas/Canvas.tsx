@@ -157,19 +157,27 @@ export const Canvas = memo(
               variant="ghost"
               size="sm"
               onClick={onToggleSound}
+              aria-label={soundEnabled ? "Mute sounds" : "Enable sounds"}
               icon={soundEnabled ? <Volume2 size={16} /> : <VolumeX size={16} />}
             />
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={onToggleHeatmap}
-              className={heatmapEnabled ? "active" : ""}
-              icon={<Flame size={16} />}
-            />
+            <div className="toolbar-tooltip-anchor">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={onToggleHeatmap}
+                className={heatmapEnabled ? "active" : ""}
+                aria-label={heatmapEnabled ? "Hide recent activity heatmap" : "Show recent activity heatmap"}
+                aria-describedby="heatmap-tooltip"
+                icon={<Flame size={16} />}
+              />
+              <span id="heatmap-tooltip" role="tooltip" className="toolbar-tooltip-glass">
+                Highlights recently placed pixels for about one minute.
+              </span>
+            </div>
           </div>
         </div>
 
-        <div className="canvas-frame-glass">
+        <div className="canvas-frame-glass" style={{ aspectRatio: `${width} / ${height}` }}>
           <BoardCanvas
             ref={boardCanvasRef}
             boardRef={boardRef}

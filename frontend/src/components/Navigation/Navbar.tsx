@@ -37,8 +37,17 @@ export const Navbar = memo(function Navbar({ account, status, builderCount, onCo
           variant={account ? "secondary" : "primary"}
           icon={<Wallet size={16} />}
           onClick={onConnect}
+          className={`wallet-button${account ? " wallet-button-connected" : ""}`}
+          aria-label={account ? `Wallet connected: ${account}` : "Connect Wallet"}
         >
-          {account ? shortAddress(account) : "Connect Wallet"}
+          {account ? (
+            <span className="wallet-button-copy">
+              <span className="wallet-button-state">Wallet Connected</span>
+              <span className="wallet-button-address">{shortAddress(account)}</span>
+            </span>
+          ) : (
+            "Connect Wallet"
+          )}
         </Button>
       </div>
     </nav>

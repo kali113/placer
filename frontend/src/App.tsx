@@ -231,6 +231,85 @@ export default function App() {
     [loadOwnerScore]
   );
 
+  const queueBoardCell = useCallback((x: number, y: number) => {
+    canvasRef.current?.queueCellUpdate(x, y);
+  }, []);
+
+  const invalidateOverlay = useCallback(() => {
+    canvasRef.current?.invalidateOverlay();
+  }, []);
+
+  const readPixelFromChain = useCallback(async (x: number, y: number) => {
+    const packed = await readClient.readContract({
+      address: canvasAddress,
+      abi: somniaPlaceAbi,
+      functionName: "getPixelPacked",
+      args: [x, y]
+    });
+
+    return normalizeDecodedPixel(decodePackedPixel(packed as bigint));
+  }, []);
+
+  const applyPixelFromChain = useCallback(
+    (x: number, y: number, pixel: DecodedPixel | null) => {
+      const hoverKey = `${x}:${y}`;
+      const color = pixel?.color ?? 0;
+
+      updateBoardCell(x, y, color);
+      queueBoardCell(x, y);
+      hoverCacheRef.current.set(hoverKey, {
+        expiresAt: getNow() + 15_000,
+        value: pixel
+      });
+
+      if (latestHoverKeyRef.current !== hoverKey) {
+        return;
+      }
+
+      setHoverColorId(color);
+      setHoverPixel(pixel);
+
+      if (pixel?.owner) {
+        setHoverOwnerScore(null);
+        void refreshHoveredOwnerScore(pixel.owner, hoverKey);
+        return;
+      }
+
+      setHoverOwnerScore(null);
+    },
+    [
+      getNow,
+      hoverCacheRef,
+      queueBoardCell,
+      refreshHoveredOwnerScore,
+      updateBoardCell
+    ]
+  );
+
+  const confirmPixelPlacement = useCallback(
+    async (x: number, y: number, expectedColor: number, expectedOwner: Address) => {
+      let latestPixel: DecodedPixel | null = null;
+
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        latestPixel = await readPixelFromChain(x, y);
+
+        if (
+          latestPixel?.owner?.toLowerCase() === expectedOwner.toLowerCase() &&
+          latestPixel.color === expectedColor
+        ) {
+          return { matched: true, pixel: latestPixel };
+        }
+
+        if (attempt < 7) {
+          await new Promise((resolve) => window.setTimeout(resolve, 500));
+        }
+      }
+
+      return { matched: false, pixel: latestPixel };
+    },
+    [readPixelFromChain]
+  );
+
   const getHoverPixel = useCallback(
     async (x: number, y: number, cacheKey: string) => {
       const cached = hoverCacheRef.current.get(cacheKey);
@@ -243,15 +322,8 @@ export default function App() {
         return inFlight;
       }
 
-      const request = readClient
-        .readContract({
-          address: canvasAddress,
-          abi: somniaPlaceAbi,
-          functionName: "getPixelPacked",
-          args: [x, y]
-        })
-        .then((packed) => {
-          const decoded = normalizeDecodedPixel(decodePackedPixel(packed as bigint));
+      const request = readPixelFromChain(x, y)
+        .then((decoded) => {
           hoverCacheRef.current.set(cacheKey, {
             expiresAt: getNow() + 15_000,
             value: decoded
@@ -265,16 +337,8 @@ export default function App() {
       hoverRequestsRef.current.set(cacheKey, request);
       return request;
     },
-    [getNow, hoverCacheRef]
+    [getNow, hoverCacheRef, readPixelFromChain]
   );
-
-  const queueBoardCell = useCallback((x: number, y: number) => {
-    canvasRef.current?.queueCellUpdate(x, y);
-  }, []);
-
-  const invalidateOverlay = useCallback(() => {
-    canvasRef.current?.invalidateOverlay();
-  }, []);
 
   useReactivityStream({
     onPixelPlaced: (x, y, color, placer) => {
@@ -409,13 +473,21 @@ export default function App() {
           args: [x, y, selectedColor]
         });
 
-        await readClient.waitForTransactionReceipt({ hash });
+        setStatus(`Waiting for on-chain confirmation at ${x},${y}…`);
 
-        updateBoardCell(x, y, selectedColor);
-        queueBoardCell(x, y);
-        hoverCacheRef.current.delete(`${x}:${y}`);
+        const receipt = await readClient.waitForTransactionReceipt({ hash });
+        if (receipt.status !== "success") {
+          throw new Error("Placement transaction reverted.");
+        }
 
-        setStatus(`Pixel confirmed at ${x},${y}.`);
+        const confirmation = await confirmPixelPlacement(x, y, selectedColor, account);
+        applyPixelFromChain(x, y, confirmation.pixel);
+
+        if (confirmation.matched) {
+          setStatus(`Pixel confirmed on-chain at ${x},${y}.`);
+        } else {
+          setStatus(`Transaction confirmed, but [${x},${y}] did not appear on-chain for your wallet.`);
+        }
 
         setUniqueBuilders((current) => {
           const next = new Set(current);
@@ -434,16 +506,15 @@ export default function App() {
     },
     [
       account,
+      applyPixelFromChain,
+      confirmPixelPlacement,
       getWalletClient,
-      queueBoardCell,
       refreshUserStats,
       scheduleLeaderboardRefresh,
       selectedColor,
       setStatus,
       setUniqueBuilders,
       txPending,
-      updateBoardCell,
-      hoverCacheRef
     ]
   );
 

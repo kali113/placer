@@ -35,3 +35,19 @@ Original prompt: Build SomniaPlace from the provided implementation brief, using
 - Production build now passes and emits a smaller main bootstrap chunk than the earlier 600kB-class bundle observed before the refactor.
 - Verified with the `develop-web-game` Playwright client against `http://127.0.0.1:5173`: latest `render_game_to_text` reports the expected hydrated ready state and the prior `Buffer is not defined` page error did not reappear after the final pass.
 - Removed the now-unused `framer-motion` dependency from the frontend workspace after replacing its runtime usage with CSS-driven transitions / plain elements.
+- Investigated a broken map rendering report from the live UI screenshot.
+- Root cause found in `frontend/src/components/BoardCanvas.tsx`: the layered canvases were pinned to an initial `960x960` bitmap/style size and did not reliably resync to the actual wrapper dimensions, which left clipped or empty regions inside larger canvas shells.
+- Patched `BoardCanvas` to measure real wrapper width/height, size the canvas bitmaps from those values, and offset drawing/pointer math from computed board bounds; patched `Canvas.tsx` to use the true board aspect ratio instead of a hard-coded square frame.
+- Follow-up fix: `syncCanvasResolution` was still reading stale initial `surfaceSize` state through a `useEffectEvent` closure during verification, which kept writing a `1x1` backing store in Firefox Playwright. It now receives the measured width/height explicitly, and Playwright verification shows each canvas layer matches the wrapper dimensions again.
+- Updated the navbar wallet control so a connected state renders an explicit `Wallet Connected` label with the shortened address instead of only replacing the button text.
+- Re-ran `npm run frontend:build` successfully after the wallet-header patch.
+- Verified the wallet header in Playwright with a mocked injected provider:
+  - Desktop navbar screenshot shows `Wallet Connected` plus the shortened address and the existing Somnia status text.
+  - Mobile navbar screenshot confirms the stacked layout remains readable after the new two-line wallet label.
+- Added a delayed tooltip to the fire-icon heatmap toggle in `Canvas.tsx` so a description appears after sustained hover/focus instead of leaving the control unexplained.
+- Added explicit `aria-label`s to the icon-only sound and heatmap toolbar buttons to close the current accessibility gap while touching that area.
+- Re-ran `npm run frontend:build` successfully after the heatmap-tooltip patch.
+- Verified with the `develop-web-game` Playwright client and direct Playwright hover/focus checks:
+  - `render_game_to_text` still reports the expected hydrated ready state and the run produced no fresh console/page errors in the heatmap-tooltip output directory.
+  - Desktop hover check confirmed `#heatmap-tooltip` transitions from hidden to visible after the delay and the screenshot shows the tooltip anchored to the fire button without obscuring core controls.
+  - Narrow-screen focus check confirmed the tooltip stays within the viewport in the stacked mobile toolbar layout.

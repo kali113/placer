@@ -43,7 +43,17 @@ interface BoardCanvasProps {
 interface CanvasGeometry {
   cell: number;
   devicePixelRatio: number;
-  surfaceSize: number;
+  surfaceWidth: number;
+  surfaceHeight: number;
+  boardOffsetX: number;
+  boardOffsetY: number;
+  boardPixelWidth: number;
+  boardPixelHeight: number;
+}
+
+interface SurfaceSize {
+  width: number;
+  height: number;
 }
 
 export const BoardCanvas = memo(
@@ -73,27 +83,37 @@ export const BoardCanvas = memo(
     const pendingCellsRef = useRef<Map<string, HoverCell>>(new Map());
     const hoverKeyRef = useRef<string | null>(null);
     const geometryRef = useRef<CanvasGeometry>({
-      cell: 960 / boardWidth,
+      cell: 1,
       devicePixelRatio: 1,
-      surfaceSize: 960
+      surfaceWidth: 1,
+      surfaceHeight: 1,
+      boardOffsetX: 0,
+      boardOffsetY: 0,
+      boardPixelWidth: boardWidth,
+      boardPixelHeight: boardHeight
     });
     const fullRedrawRef = useRef(true);
     const baseFrameRef = useRef<number | null>(null);
     const overlayFrameRef = useRef<number | null>(null);
     const animationFrameRef = useRef<number | null>(null);
-    const [surfaceSize, setSurfaceSize] = useState(960);
-
-    const syncCanvasResolution = useEffectEvent((canvas: HTMLCanvasElement | null) => {
-      if (!canvas) {
-        return;
-      }
-
-      const devicePixelRatio = window.devicePixelRatio || 1;
-      canvas.width = Math.floor(surfaceSize * devicePixelRatio);
-      canvas.height = Math.floor(surfaceSize * devicePixelRatio);
-      canvas.style.width = `${surfaceSize}px`;
-      canvas.style.height = `${surfaceSize}px`;
+    const [surfaceSize, setSurfaceSize] = useState<SurfaceSize>({
+      width: 1,
+      height: 1
     });
+
+    const syncCanvasResolution = useEffectEvent(
+      (canvas: HTMLCanvasElement | null, surfaceWidth: number, surfaceHeight: number) => {
+        if (!canvas) {
+          return;
+        }
+
+        const devicePixelRatio = window.devicePixelRatio || 1;
+        canvas.width = Math.max(1, Math.floor(surfaceWidth * devicePixelRatio));
+        canvas.height = Math.max(1, Math.floor(surfaceHeight * devicePixelRatio));
+        canvas.style.width = "100%";
+        canvas.style.height = "100%";
+      }
+    );
 
     const drawGrid = useEffectEvent(() => {
       const canvas = gridCanvasRef.current;
@@ -106,9 +126,10 @@ export const BoardCanvas = memo(
         return;
       }
 
-      const { devicePixelRatio, cell } = geometryRef.current;
+      const { devicePixelRatio, cell, surfaceWidth, surfaceHeight, boardOffsetX, boardOffsetY } =
+        geometryRef.current;
       context.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
-      context.clearRect(0, 0, surfaceSize, surfaceSize);
+      context.clearRect(0, 0, surfaceWidth, surfaceHeight);
       context.imageSmoothingEnabled = false;
 
       if (cell < 6) {
@@ -119,29 +140,29 @@ export const BoardCanvas = memo(
       context.lineWidth = 1;
 
       for (let x = 0; x <= boardWidth; x += 1) {
-        const drawX = Math.floor(x * cell) + 0.5;
+        const drawX = Math.floor(boardOffsetX + x * cell) + 0.5;
         context.beginPath();
-        context.moveTo(drawX, 0);
-        context.lineTo(drawX, surfaceSize);
+        context.moveTo(drawX, boardOffsetY);
+        context.lineTo(drawX, boardOffsetY + boardHeight * cell);
         context.stroke();
       }
 
       for (let y = 0; y <= boardHeight; y += 1) {
-        const drawY = Math.floor(y * cell) + 0.5;
+        const drawY = Math.floor(boardOffsetY + y * cell) + 0.5;
         context.beginPath();
-        context.moveTo(0, drawY);
-        context.lineTo(surfaceSize, drawY);
+        context.moveTo(boardOffsetX, drawY);
+        context.lineTo(boardOffsetX + boardWidth * cell, drawY);
         context.stroke();
       }
     });
 
     const drawBoardCell = useEffectEvent((context: CanvasRenderingContext2D, x: number, y: number) => {
-      const { cell } = geometryRef.current;
+      const { cell, boardOffsetX, boardOffsetY } = geometryRef.current;
       const color = palette[boardRef.current[pixelIndex(x, y, boardWidth)]] ?? palette[0];
       context.fillStyle = color;
       context.fillRect(
-        Math.floor(x * cell),
-        Math.floor(y * cell),
+        Math.floor(boardOffsetX + x * cell),
+        Math.floor(boardOffsetY + y * cell),
         Math.ceil(cell),
         Math.ceil(cell)
       );
@@ -158,14 +179,14 @@ export const BoardCanvas = memo(
         return;
       }
 
-      const { devicePixelRatio } = geometryRef.current;
+      const { devicePixelRatio, surfaceWidth, surfaceHeight } = geometryRef.current;
       context.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
       context.imageSmoothingEnabled = false;
 
       if (fullRedrawRef.current) {
-        context.clearRect(0, 0, surfaceSize, surfaceSize);
+        context.clearRect(0, 0, surfaceWidth, surfaceHeight);
         context.fillStyle = "#000";
-        context.fillRect(0, 0, surfaceSize, surfaceSize);
+        context.fillRect(0, 0, surfaceWidth, surfaceHeight);
 
         for (let y = 0; y < boardHeight; y += 1) {
           for (let x = 0; x < boardWidth; x += 1) {
@@ -199,11 +220,12 @@ export const BoardCanvas = memo(
         return;
       }
 
-      const { devicePixelRatio, cell } = geometryRef.current;
+      const { devicePixelRatio, cell, surfaceWidth, surfaceHeight, boardOffsetX, boardOffsetY } =
+        geometryRef.current;
       const now = getNow();
 
       context.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
-      context.clearRect(0, 0, surfaceSize, surfaceSize);
+      context.clearRect(0, 0, surfaceWidth, surfaceHeight);
       context.imageSmoothingEnabled = false;
 
       for (const [key, expiry] of penalizedPixelsRef.current) {
@@ -225,8 +247,8 @@ export const BoardCanvas = memo(
           const x = Number(xValue);
           const y = Number(yValue);
           const alpha = Math.max(0, 0.45 * (1 - age / heatmapFadeMs));
-          const left = Math.floor(x * cell);
-          const top = Math.floor(y * cell);
+          const left = Math.floor(boardOffsetX + x * cell);
+          const top = Math.floor(boardOffsetY + y * cell);
           const size = Math.ceil(cell);
 
           context.fillStyle = `rgba(255, 107, 53, ${alpha.toFixed(3)})`;
@@ -251,8 +273,8 @@ export const BoardCanvas = memo(
         const remaining = expiry - now;
         const pulse = 0.15 + 0.25 * Math.abs(Math.sin((now / 300) * Math.PI));
         const fadeOut = Math.min(1, remaining / 2000);
-        const left = Math.floor(x * cell);
-        const top = Math.floor(y * cell);
+        const left = Math.floor(boardOffsetX + x * cell);
+        const top = Math.floor(boardOffsetY + y * cell);
         const size = Math.ceil(cell);
 
         context.fillStyle = `rgba(239, 71, 111, ${(pulse * fadeOut).toFixed(3)})`;
@@ -266,8 +288,8 @@ export const BoardCanvas = memo(
       }
 
       if (hoverCell) {
-        const left = Math.floor(hoverCell.x * cell);
-        const top = Math.floor(hoverCell.y * cell);
+        const left = Math.floor(boardOffsetX + hoverCell.x * cell);
+        const top = Math.floor(boardOffsetY + hoverCell.y * cell);
         const size = Math.ceil(cell);
 
         context.strokeStyle = txPending ? "#ffd166" : "#f2f3ef";
@@ -372,15 +394,28 @@ export const BoardCanvas = memo(
     }, [ensureAnimationLoop, heatmapEnabled, hoverCell, scheduleOverlayDraw, timeVersion, txPending]);
 
     useEffect(() => {
+      if (surfaceSize.width <= 0 || surfaceSize.height <= 0) {
+        return;
+      }
+
+      const cell = Math.min(surfaceSize.width / boardWidth, surfaceSize.height / boardHeight);
+      const boardPixelWidth = cell * boardWidth;
+      const boardPixelHeight = cell * boardHeight;
+
       geometryRef.current = {
-        cell: surfaceSize / boardWidth,
+        cell,
         devicePixelRatio: window.devicePixelRatio || 1,
-        surfaceSize
+        surfaceWidth: surfaceSize.width,
+        surfaceHeight: surfaceSize.height,
+        boardOffsetX: Math.floor((surfaceSize.width - boardPixelWidth) / 2),
+        boardOffsetY: Math.floor((surfaceSize.height - boardPixelHeight) / 2),
+        boardPixelWidth,
+        boardPixelHeight
       };
 
-      syncCanvasResolution(baseCanvasRef.current);
-      syncCanvasResolution(gridCanvasRef.current);
-      syncCanvasResolution(overlayCanvasRef.current);
+      syncCanvasResolution(baseCanvasRef.current, surfaceSize.width, surfaceSize.height);
+      syncCanvasResolution(gridCanvasRef.current, surfaceSize.width, surfaceSize.height);
+      syncCanvasResolution(overlayCanvasRef.current, surfaceSize.width, surfaceSize.height);
 
       fullRedrawRef.current = true;
       drawGrid();
@@ -403,16 +438,61 @@ export const BoardCanvas = memo(
         return;
       }
 
+      const commitSurfaceSize = (width: number, height: number) => {
+        const nextWidth = Math.max(1, Math.floor(width));
+        const nextHeight = Math.max(1, Math.floor(height));
+        setSurfaceSize((current) => {
+          if (current.width === nextWidth && current.height === nextHeight) {
+            return current;
+          }
+
+          return {
+            width: nextWidth,
+            height: nextHeight
+          };
+        });
+      };
+
+      const measureShell = () => {
+        const rect = shell.getBoundingClientRect();
+        commitSurfaceSize(rect.width, rect.height);
+      };
+
+      measureShell();
+      const frame = window.requestAnimationFrame(measureShell);
+      let retries = 0;
+      const retryTimer = window.setInterval(() => {
+        retries += 1;
+        measureShell();
+
+        if (shell.clientWidth > 1 && shell.clientHeight > 1) {
+          window.clearInterval(retryTimer);
+          return;
+        }
+
+        if (retries >= 20) {
+          window.clearInterval(retryTimer);
+        }
+      }, 100);
+
       const observer = new ResizeObserver((entries) => {
         const next = entries[0]?.contentRect;
         if (!next) {
           return;
         }
-        setSurfaceSize(Math.max(320, Math.floor(Math.min(next.width, next.height))));
+
+        commitSurfaceSize(next.width, next.height);
       });
 
       observer.observe(shell);
-      return () => observer.disconnect();
+      window.addEventListener("resize", measureShell);
+
+      return () => {
+        window.cancelAnimationFrame(frame);
+        window.clearInterval(retryTimer);
+        window.removeEventListener("resize", measureShell);
+        observer.disconnect();
+      };
     }, []);
 
     useEffect(() => {
@@ -430,9 +510,22 @@ export const BoardCanvas = memo(
     }, []);
 
     const getCellFromPointer = (event: ReactPointerEvent<HTMLCanvasElement>): HoverCell | null => {
-      const { cell } = geometryRef.current;
-      const x = Math.floor(event.nativeEvent.offsetX / cell);
-      const y = Math.floor(event.nativeEvent.offsetY / cell);
+      const { cell, boardOffsetX, boardOffsetY, boardPixelWidth, boardPixelHeight } =
+        geometryRef.current;
+      const localX = event.nativeEvent.offsetX - boardOffsetX;
+      const localY = event.nativeEvent.offsetY - boardOffsetY;
+
+      if (
+        localX < 0 ||
+        localY < 0 ||
+        localX >= boardPixelWidth ||
+        localY >= boardPixelHeight
+      ) {
+        return null;
+      }
+
+      const x = Math.floor(localX / cell);
+      const y = Math.floor(localY / cell);
 
       if (x < 0 || x >= boardWidth || y < 0 || y >= boardHeight) {
         return null;
