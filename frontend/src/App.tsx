@@ -19,6 +19,7 @@ import { Leaderboard } from "./components/Sidebar/Leaderboard";
 import { ActivityLog } from "./components/Sidebar/ActivityLog";
 
 import { readClient } from "./lib/clients";
+import { canvasAddress, reactorAddress } from "./lib/config";
 import { somniaPlaceAbi, somniaPlaceReactorAbi } from "./lib/contracts";
 import { decodePackedPixel, type DecodedPixel } from "./lib/pixels";
 
@@ -35,6 +36,19 @@ interface OwnerScoreCacheEntry {
 }
 
 let audioCtx: AudioContext | null = null;
+
+function normalizeDecodedPixel(pixel: DecodedPixel): DecodedPixel | null {
+  if (
+    pixel.owner === null &&
+    pixel.lastUpdated === 0 &&
+    pixel.overwriteCount === 0 &&
+    pixel.flags === 0
+  ) {
+    return null;
+  }
+
+  return pixel;
+}
 
 function getAudioContext() {
   if (!audioCtx) {
@@ -114,7 +128,7 @@ export default function App() {
   } = useGameStats(account);
 
   const canvasRef = useRef<CanvasHandle | null>(null);
-  const hoverRequestsRef = useRef<Map<string, Promise<DecodedPixel>>>(new Map());
+  const hoverRequestsRef = useRef<Map<string, Promise<DecodedPixel | null>>>(new Map());
   const ownerScoreCacheRef = useRef<Map<string, OwnerScoreCacheEntry>>(new Map());
   const ownerScoreRequestsRef = useRef<Map<string, Promise<bigint>>>(new Map());
   const latestHoverKeyRef = useRef<string | null>(null);
@@ -178,7 +192,7 @@ export default function App() {
 
       const request = readClient
         .readContract({
-          address: "0xf9CBa4cD9dfDd8dBE88C7345CCFb04495d13Bf1b",
+          address: reactorAddress,
           abi: somniaPlaceReactorAbi,
           functionName: "scores",
           args: [owner]
@@ -231,13 +245,13 @@ export default function App() {
 
       const request = readClient
         .readContract({
-          address: "0x199D3e126b2BE52954F5DFCc145463a96659cb19",
+          address: canvasAddress,
           abi: somniaPlaceAbi,
           functionName: "getPixelPacked",
           args: [x, y]
         })
         .then((packed) => {
-          const decoded = decodePackedPixel(packed as bigint);
+          const decoded = normalizeDecodedPixel(decodePackedPixel(packed as bigint));
           hoverCacheRef.current.set(cacheKey, {
             expiresAt: getNow() + 15_000,
             value: decoded
@@ -389,7 +403,7 @@ export default function App() {
         setStatus(`Submitting pixel at ${x},${y}…`);
 
         const hash = await client.writeContract({
-          address: "0x199D3e126b2BE52954F5DFCc145463a96659cb19",
+          address: canvasAddress,
           abi: somniaPlaceAbi,
           functionName: "placePixel",
           args: [x, y, selectedColor]
@@ -507,7 +521,7 @@ export default function App() {
     const cached = hoverCacheRef.current.get(hoverKey);
     if (cached && cached.expiresAt > getNow()) {
       setHoverPixel(cached.value);
-      if (cached.value.owner) {
+      if (cached.value?.owner) {
         setHoverOwnerScore(null);
         void refreshHoveredOwnerScore(cached.value.owner, hoverKey);
       } else {
@@ -527,7 +541,7 @@ export default function App() {
           }
 
           setHoverPixel(pixel);
-          if (pixel.owner) {
+          if (pixel?.owner) {
             setHoverOwnerScore(null);
             void refreshHoveredOwnerScore(pixel.owner, hoverKey);
           } else {

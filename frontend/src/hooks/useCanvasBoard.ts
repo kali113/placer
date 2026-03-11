@@ -2,13 +2,10 @@ import { useCallback, useRef } from "react";
 import { hexToBytes } from "viem";
 
 import { readClient } from "../lib/clients";
+import { boardHeight, boardWidth, canvasAddress } from "../lib/config";
 import { somniaPlaceAbi } from "../lib/contracts";
 import { pixelIndex, type DecodedPixel } from "../lib/pixels";
-
-const boardWidth = 100;
-const boardHeight = 100;
 const emptyBoard = new Uint8Array(boardWidth * boardHeight);
-const canvasAddress = "0x199D3e126b2BE52954F5DFCc145463a96659cb19";
 
 interface CacheEntry<T> {
   expiresAt: number;
@@ -36,14 +33,14 @@ export const palette = [
 
 export function useCanvasBoard() {
   const boardRef = useRef<Uint8Array>(emptyBoard.slice());
-  const hoverCacheRef = useRef<Map<string, CacheEntry<DecodedPixel>>>(new Map());
+  const hoverCacheRef = useRef<Map<string, CacheEntry<DecodedPixel | null>>>(new Map());
   const recentPixelsRef = useRef<Map<string, number>>(new Map());
   const penalizedPixelsRef = useRef<Map<string, number>>(new Map());
 
   const hydrateBoard = useCallback(async () => {
     try {
       const canvasData = (await readClient.readContract({
-        address: canvasAddress as `0x${string}`,
+        address: canvasAddress,
         abi: somniaPlaceAbi,
         functionName: "getCanvas"
       })) as `0x${string}`;

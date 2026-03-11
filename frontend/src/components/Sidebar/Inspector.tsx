@@ -52,7 +52,7 @@ export const Inspector = memo(function Inspector({
         <div className="inspector-card-glass">
           <span className="card-label-glass"><Calendar size={12}/> Updated</span>
           <span className="card-value-glass small">
-            {pixel ? new Date(pixel.lastUpdated * 1000).toLocaleString() : '-'}
+            {pixel?.lastUpdated ? new Date(pixel.lastUpdated * 1000).toLocaleString() : '-'}
           </span>
         </div>
 

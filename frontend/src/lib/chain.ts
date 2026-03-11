@@ -1,12 +1,18 @@
 import { defineChain } from "viem";
 import { somniaTestnet } from "viem/chains";
 
-export const somniaRpcUrl = "https://dream-rpc.somnia.network";
-export const somniaWsUrl = "wss://dream-rpc.somnia.network/ws";
-export const somniaExplorerUrl = "https://shannon.somnia.network";
+import {
+  somniaChainId,
+  somniaExplorerUrl,
+  somniaRpcUrl,
+  somniaWsUrl
+} from "./config";
+
+export { somniaChainId, somniaExplorerUrl, somniaRpcUrl, somniaWsUrl };
 
 export const somniaShannon = defineChain({
   ...somniaTestnet,
+  id: somniaChainId,
   rpcUrls: {
     default: {
       http: [somniaRpcUrl],
@@ -18,6 +24,3 @@ export const somniaShannon = defineChain({
     }
   }
 });
-
-export const somniaChainId = 50312;
-

@@ -1,10 +1,8 @@
 import { useEffect, useRef, useCallback } from "react";
 import { decodeEventLog, getAddress, type Address } from "viem";
 import { readClient, reactivitySdk } from "../lib/clients";
+import { canvasAddress, reactorAddress } from "../lib/config";
 import { somniaPlaceAbi, somniaPlaceReactorAbi, pixelPlacedTopic } from "../lib/contracts";
-
-const canvasAddress = "0x199D3e126b2BE52954F5DFCc145463a96659cb19" as Address;
-const reactorAddress = "0xf9CBa4cD9dfDd8dBE88C7345CCFb04495d13Bf1b" as Address;
 const RECENT_ACTIVITY_LIMIT = 30;
 const ACTIVITY_BLOCK_WINDOW = 1_000n;
 const ACTIVITY_LOOKBACK_LIMIT = 25_000n;
