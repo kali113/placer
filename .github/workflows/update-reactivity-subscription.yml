@@ -1,0 +1,71 @@
+name: Update Reactivity Subscription
+
+on:
+  workflow_dispatch:
+    inputs:
+      gas_limit:
+        description: "Subscription callback gas limit"
+        required: true
+        default: "5000000"
+      max_fee_gwei:
+        description: "Max fee per gas in gwei"
+        required: true
+        default: "20"
+      priority_fee_gwei:
+        description: "Priority fee per gas in gwei"
+        required: true
+        default: "2"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-reactivity-subscription
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    env:
+      PRIVATE_KEY: ${{ secrets.SOMNIA_PRIVATE_KEY }}
+      REACTIVITY_GAS_LIMIT: ${{ inputs.gas_limit }}
+      REACTIVITY_MAX_FEE_GWEI: ${{ inputs.max_fee_gwei }}
+      REACTIVITY_PRIORITY_FEE_GWEI: ${{ inputs.priority_fee_gwei }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Validate secret
+        run: |
+          if [ -z "${PRIVATE_KEY}" ]; then
+            echo "Missing repository secret SOMNIA_PRIVATE_KEY" >&2
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Replace Shannon subscription
+        run: npm run setup:subscription
+
+      - name: Show deployment manifest
+        run: cat deployments/shannon.json
+
+      - name: Commit updated manifest
+        run: |
+          if git diff --quiet -- deployments/shannon.json; then
+            echo "No manifest changes to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add deployments/shannon.json
+          git commit -m "Update reactivity subscription manifest"
+          git push
